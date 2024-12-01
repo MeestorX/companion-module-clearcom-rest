@@ -1,16 +1,16 @@
 {
-	"id": "your-module-name",
-	"name": "your-module-name",
-	"shortname": "module-shortname",
-	"description": "A short one line description of your module",
+	"id": "companion-module-clearcom-rest",
+	"name": "companion-module-clearcom-rest",
+	"shortname": "CC Rest",
+	"description": "A Module to control Clear-Com equipment using a REST API",
 	"version": "0.0.0",
 	"license": "MIT",
-	"repository": "git+https://github.com/bitfocus/companion-module-your-module-name.git",
-	"bugs": "https://github.com/bitfocus/companion-module-your-module-name/issues",
+	"repository": "git+https://github.com/MeestorX/companion-module-clearcom-rest.git",
+	"bugs": "https://github.com/MeestorX/companion-module-clearcom-rest.git/issues",
 	"maintainers": [
 		{
-			"name": "Your name",
-			"email": "Your email"
+			"name": "Andrew Broughton",
+			"email": "andy@checkcheckonetwo.com"
 		}
 	],
 	"runtime": {
@@ -20,7 +20,7 @@
 		"entrypoint": "../dist/main.js"
 	},
 	"legacyIds": [],
-	"manufacturer": "Your company",
-	"products": ["Your product"],
+	"manufacturer": "Clear-Com",
+	"products": ["Arcadia, LQ"],
 	"keywords": []
 }

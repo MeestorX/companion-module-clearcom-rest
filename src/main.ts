@@ -4,6 +4,7 @@ import { UpdateVariableDefinitions } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
+import * as rest from './rest.js'
 
 export class ModuleInstance extends InstanceBase<ModuleConfig> {
 	config!: ModuleConfig // Setup in init()
@@ -19,7 +20,30 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 
 		this.updateActions() // export actions
 		this.updateFeedbacks() // export feedbacks
-		this.updateVariableDefinitions() // export variable definitions
+		this.updateVariableDefinitions(); // export variable definitions
+		
+		
+		// Example usage
+		(async () => {
+			const apiUrl = 'https://70.167.13.124/api/1/schemas/clearcom_api.json'
+			const bearerToken = ''
+			try {
+				// GET request
+				const getResponse = await rest.getRequest(apiUrl, bearerToken);
+				console.log('GET Response:', getResponse);
+
+				/*
+				// POST request
+				const postData = { key: 'value' };
+				const postResponse = await rest.postRequest(apiUrl, bearerToken, postData);
+				console.log('POST Response:', postResponse);
+				*/
+			} catch (err) {
+				console.error((err as Error));
+			}
+		})();
+
+
 	}
 	// When module gets deleted
 	async destroy(): Promise<void> {
