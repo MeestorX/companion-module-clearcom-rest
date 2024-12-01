@@ -20,17 +20,16 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 
 		this.updateActions() // export actions
 		this.updateFeedbacks() // export feedbacks
-		this.updateVariableDefinitions(); // export variable definitions
-		
-		
+		this.updateVariableDefinitions() // export variable definitions
+
 		// Example usage
-		(async () => {
+		await (async () => {
 			const apiUrl = 'https://70.167.13.124/api/1/schemas/clearcom_api.json'
 			const bearerToken = ''
 			try {
 				// GET request
-				const getResponse = await rest.getRequest(apiUrl, bearerToken);
-				console.log('GET Response:', getResponse);
+				const getResponse = await rest.getRequest(apiUrl, bearerToken)
+				console.log('GET Response:', getResponse)
 
 				/*
 				// POST request
@@ -39,11 +38,9 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 				console.log('POST Response:', postResponse);
 				*/
 			} catch (err) {
-				console.error((err as Error));
+				console.error(err as Error)
 			}
-		})();
-
-
+		})()
 	}
 	// When module gets deleted
 	async destroy(): Promise<void> {
