@@ -66,7 +66,9 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 				logpassword: this.config.password,
 			}
 
-			const postResponse = await postRequest(apiBaseUrl + '/auth/local/login', bearerToken, postData)
+			const postResponse = (await postRequest(apiBaseUrl + '/auth/local/login', bearerToken, postData)) as {
+				jwt: string
+			}
 			console.log('POST Response:', postResponse)
 
 			if (postResponse) {
