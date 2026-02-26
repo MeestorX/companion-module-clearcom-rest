@@ -26,6 +26,7 @@ export type Endpoint = {
 	label: string
 	type: string
 	device_id: number
+	isGateway?: boolean
 	liveStatus: EndpointLiveStatus | Record<string, never>
 }
 
@@ -73,10 +74,10 @@ export type KeysetEntity = {
 export type KeySlot = {
 	keysetIndex: number
 	entities: KeysetEntity[]
-	activationState: 'talk' | 'listen' | 'talkforcelisten'
+	activationState: string
 	isCallKey: boolean
 	isReplyKey?: boolean
-	talkBtnMode: 'latching' | 'non-latching' | 'disabled'
+	talkBtnMode: string
 }
 
 export type Keyset = {
@@ -143,4 +144,10 @@ export type Port = {
 	port_label: string
 	res: string
 	port_settings?: { port_splitLabel?: boolean }
+}
+
+export type KeyAssignCapabilities = {
+	keyCount: number
+	activationStates: string[] | null
+	talkBtnModes: string[]
 }

@@ -94,23 +94,28 @@ async function initialFetch(instance: ModuleInstance): Promise<void> {
 		])
 		for (const rs of rolesets) {
 			instance.rolesets.set(rs.id, rs)
-			instance.log('debug', `Roleset ${rs.id}: ${JSON.stringify(rs, null, 2)}`)
 		}
 		await fetchConnections(instance)
 		await fetchPorts(instance)
-		instance.updateActions()
-		instance.updateFeedbacks()
 		await fetchKeysets(instance)
 		for (const ep of endpoints) {
-			if (Object.keys(ep.liveStatus).length > 0) {
-				const status = ep.liveStatus as EndpointLiveStatus
-				if (status.status === 'online') {
-					instance.endpointStatus.set(ep.id, { ...status, device_id: ep.device_id })
-					const role = instance.rolesets.get(status.association?.dpId)
-					instance.log('debug', `Initial load: beltpack ${ep.id} (${ep.label}) role=${role?.name ?? 'unknown'}`)
-				}
+			if (ep.isGateway) {
+				instance.gateways.set(ep.id, ep)
+				const liveStatus = Object.keys(ep.liveStatus).length > 0 ? (ep.liveStatus as EndpointLiveStatus) : null
+				if (liveStatus) instance.endpointStatus.set(ep.id, { ...liveStatus, device_id: ep.device_id })
+				continue
+			}
+			const liveStatus = Object.keys(ep.liveStatus).length > 0 ? (ep.liveStatus as EndpointLiveStatus) : null
+			if (liveStatus?.status === 'online') {
+				instance.endpointStatus.set(ep.id, { ...liveStatus, device_id: ep.device_id })
+				const role = instance.rolesets.get(liveStatus.association?.dpId)
+				instance.log('info', `Initial load: beltpack ${ep.id} (${ep.label}) role=${role?.name ?? 'unknown'}`)
 			}
 		}
+		instance.updateActions()
+		instance.updateFeedbacks()
+		const allFbIds = getFeedbackIdsByTrigger(instance, 'endpoint')
+		if (allFbIds.length > 0) instance.checkFeedbacks(allFbIds[0] as any, ...(allFbIds.slice(1) as any[]))
 	} catch (error) {
 		instance.log('error', `Initial fetch failed: ${String(error)}`)
 	}
@@ -118,15 +123,11 @@ async function initialFetch(instance: ModuleInstance): Promise<void> {
 
 function handleEndpointUpdated(instance: ModuleInstance, event: EndpointUpdatedEvent): void {
 	const { endpointId } = event
-	instance.log('debug', `EndpointUpdated ${endpointId} [${event.path}]: ${JSON.stringify(event.value, null, 2)}`)
+	instance.log('info', `EndpointUpdated ${endpointId} [${event.path}]`)
 
 	if (event.path === 'liveStatus') {
 		const isEmpty = Object.keys(event.value).length === 0
 		const isOffline = !isEmpty && (event.value as EndpointLiveStatus).status !== 'online'
-		const affectedRoleId =
-			(event.value as EndpointLiveStatus).association?.dpId ??
-			instance.endpointStatus.get(endpointId)?.association?.dpId ??
-			-1
 
 		if (isEmpty || isOffline) {
 			const offlineRole = instance.rolesets.get(instance.endpointStatus.get(endpointId)?.association?.dpId ?? -1)
@@ -145,10 +146,6 @@ function handleEndpointUpdated(instance: ModuleInstance, event: EndpointUpdatedE
 					`remaining=${merged.longevity.hours}h${merged.longevity.minutes}m`,
 			)
 		}
-		instance.log(
-			'debug',
-			`EndpointUpdated: affectedRoleId=${affectedRoleId} endpointFeedbacks=${JSON.stringify(getFeedbackIdsByTrigger(instance, 'endpoint'))}`,
-		)
 		const endpointFbIds = getFeedbackIdsByTrigger(instance, 'endpoint')
 		if (endpointFbIds.length > 0) instance.checkFeedbacks(endpointFbIds[0] as any, ...(endpointFbIds.slice(1) as any[]))
 		return
@@ -173,7 +170,7 @@ export async function fetchKeysets(instance: ModuleInstance): Promise<void> {
 		for (const keyset of response) {
 			instance.keysets.set(keyset.id, keyset)
 		}
-		instance.log('debug', `Keysets loaded: ${[...instance.keysets.keys()].join(', ')}`)
+		instance.log('info', `Keysets loaded: ${[...instance.keysets.keys()].join(', ')}`)
 		// Check all keyset feedback type IDs directly — their callbacks only fire when explicitly checked
 		const keysetFbIds = getFeedbackIdsByTrigger(instance, 'keyset')
 		if (keysetFbIds.length > 0) instance.checkFeedbacks(keysetFbIds[0] as any, ...(keysetFbIds.slice(1) as any[]))
@@ -190,7 +187,7 @@ export async function fetchConnections(instance: ModuleInstance): Promise<void> 
 			instance.connections.set(conn.id, conn)
 		}
 		instance.log(
-			'debug',
+			'info',
 			`Connections loaded: ${[...instance.connections.values()].map((c) => `${c.id}:${c.label}`).join(', ')}`,
 		)
 	} catch (error) {
@@ -206,7 +203,7 @@ export async function fetchPorts(instance: ModuleInstance): Promise<void> {
 			instance.ports.set(port.port_id, port)
 		}
 		instance.log(
-			'debug',
+			'info',
 			`Ports loaded: ${[...instance.ports.values()].map((p) => `${p.port_id}:${p.port_label}`).join(', ')}`,
 		)
 	} catch (error) {
@@ -247,16 +244,16 @@ export function connectArcadiaSocket(instance: ModuleInstance): void {
 	})
 
 	socket.on('live:roles', (_data: { updated: boolean }) => {
-		instance.log('debug', 'live:roles — refreshing keysets')
+		instance.log('info', 'live:roles — refreshing keysets')
 		void fetchKeysets(instance)
 	})
 
 	socket.on('live:devices', (_data: { updated: boolean }) => {
-		instance.log('debug', 'live:devices received')
+		instance.log('info', 'live:devices received')
 	})
 
 	socket.on('init', (data: unknown) => {
-		instance.log('debug', `init received: ${JSON.stringify(data, null, 2)}`)
+		instance.log('debug', `init received: users=${(data as any)?.users?.join(', ')}`)
 	})
 
 	socket.on('EndpointUpdated', (events: EndpointUpdatedEvent[]) => {
@@ -284,9 +281,9 @@ export function connectArcadiaSocket(instance: ModuleInstance): void {
 
 	const originalOnevent = (socket as unknown as { onevent: (packet: { data: unknown[] }) => void }).onevent.bind(socket)
 	;(socket as unknown as { onevent: (packet: { data: unknown[] }) => void }).onevent = (packet) => {
-		const [event, ...args] = packet.data
+		const [event] = packet.data
 		if (!handledEvents.has(event as string)) {
-			instance.log('debug', `Unhandled Socket.IO event [${event}]: ${JSON.stringify(args, null, 2)}`)
+			instance.log('debug', `Unhandled Socket.IO event [${event}]`)
 		}
 		originalOnevent(packet)
 	}

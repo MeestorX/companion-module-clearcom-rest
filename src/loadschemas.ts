@@ -3,7 +3,7 @@ import { getRequest } from './rest.js'
 import { OpenAPIV3 } from 'openapi-types'
 import { promises as fs } from 'fs'
 import path from 'path'
-import { SettingDef, SettingValueType } from './types.js'
+import { SettingDef, SettingValueType, LiveStatusDef } from './types.js'
 
 // ─── Schema loading (with version-aware caching) ──────────────────────────────
 
@@ -54,8 +54,7 @@ export async function loadSchemasAndRefs(self: ModuleInstance, deviceHost: strin
 	}
 
 	if (!mainSchema) {
-		self.log('error', 'No schema available (cached or live)')
-		return { mainSchema: {} as OpenAPIV3.Document, refSchemas: {} }
+		throw new Error('No schema available — neither live nor cached. Cannot start module.')
 	}
 
 	const refSchemas: Record<string, OpenAPIV3.SchemaObject> = {}
@@ -151,6 +150,9 @@ const DEFINITION_TO_DEVICE: Record<string, string> = {
 	EDGEBPSettings: 'E-BP',
 	NEPSettings: 'NEP',
 	VSeriesPanelSettingsBase: 'V-Series',
+	VSeriesPanel12KeySettings: 'V-Series-12',
+	VSeriesPanel24KeySettings: 'V-Series-24',
+	VSeriesPanel32KeySettings: 'V-Series-32',
 }
 
 const SKIP_KEYS = new Set([
@@ -241,16 +243,112 @@ export async function loadAndLogKeysetSettings(
 
 	const settings = parseKeysetSettings(schema)
 
-	instance.log('info', `=== Available Keyset Feedbacks (${settings.length} total) ===`)
-	let lastDevice = ''
-	for (const s of settings) {
-		if (s.deviceType !== lastDevice) {
-			instance.log('info', `--- ${s.deviceType} ---`)
-			lastDevice = s.deviceType
-		}
-		const feedbackType = s.valueType.kind === 'boolean' ? 'boolean' : 'value'
-		instance.log('info', `  ${s.key} [${feedbackType}]${s.supportsIncDec ? ' ±' : ''}`)
-	}
+	const byDevice: Record<string, number> = {}
+	for (const s of settings) byDevice[s.deviceType] = (byDevice[s.deviceType] ?? 0) + 1
+	const summary = Object.entries(byDevice)
+		.map(([dt, n]) => `${dt}:${n}`)
+		.join(', ')
+	instance.log('info', `Keyset settings loaded: ${settings.length} total (${summary})`)
 
 	return settings
+}
+
+// ─── Key assign capabilities parser ──────────────────────────────────────────
+
+// V-Series variants only define key count — capabilities inherited from base
+const V_SERIES_BASE = 'VSeriesPanelSettingsBase'
+const V_SERIES_VARIANTS = new Set([
+	'VSeriesPanel12KeySettings',
+	'VSeriesPanel24KeySettings',
+	'VSeriesPanel32KeySettings',
+])
+
+export function parseKeyAssignCapabilities(
+	schema: Record<string, unknown>,
+): Record<string, import('./types.js').KeyAssignCapabilities> {
+	const definitions = schema.definitions as Record<string, Record<string, unknown>> | undefined
+	if (!definitions) return {}
+
+	const getKeysetsItemProps = (defName: string): Record<string, unknown> => {
+		const source = V_SERIES_VARIANTS.has(defName) ? V_SERIES_BASE : defName
+		const def = definitions[source]
+		if (!def) return {}
+		const keysets = (def.properties as Record<string, Record<string, unknown>> | undefined)?.keysets
+		return (keysets?.items as Record<string, Record<string, unknown>> | undefined)?.properties ?? {}
+	}
+
+	const result: Record<string, import('./types.js').KeyAssignCapabilities> = {}
+
+	for (const [defName, deviceType] of Object.entries(DEFINITION_TO_DEVICE)) {
+		const def = definitions[defName]
+		if (!def) continue
+
+		// Key count: from this definition or base
+		const keysets = (def.properties as Record<string, Record<string, unknown>> | undefined)?.keysets
+		const keyCount = keysets?.maxItems as number | undefined
+		if (keyCount === undefined) continue
+
+		const itemProps = getKeysetsItemProps(defName)
+		const activationStates =
+			((itemProps.activationState as Record<string, unknown> | undefined)?.enum as string[] | null) ?? null
+		const talkBtnModes = (itemProps.talkBtnMode as Record<string, unknown> | undefined)?.enum as string[] | undefined
+
+		if (!talkBtnModes) continue
+
+		result[deviceType] = { keyCount, activationStates, talkBtnModes }
+	}
+
+	return result
+}
+
+// ─── Live status defs parser ──────────────────────────────────────────────────
+
+// Keys to skip — internal/structural fields not useful as feedbacks
+const SKIP_LIVE_STATUS_KEYS = new Set([
+	'role',
+	'session',
+	'syncState',
+	'antennaIndex',
+	'antennaSlot',
+	'frequencyType',
+	'wirelessStatus',
+])
+
+// Override labels for specific keys
+const LIVE_STATUS_LABEL_OVERRIDES: Record<string, string> = {
+	'longevity.hours': 'Time Remaining Hours',
+	'longevity.minutes': 'Time Remaining Minutes',
+}
+
+function toLiveLabel(key: string): string {
+	if (LIVE_STATUS_LABEL_OVERRIDES[key]) return LIVE_STATUS_LABEL_OVERRIDES[key]
+	return key
+		.replace(/([A-Z])/g, ' $1')
+		.replace(/^./, (c) => c.toUpperCase())
+		.trim()
+}
+
+export function parseLiveStatusDefs(schema: Record<string, unknown>): LiveStatusDef[] {
+	const props = (schema.properties as Record<string, Record<string, unknown>>) ?? {}
+	const results: LiveStatusDef[] = []
+
+	for (const [key, prop] of Object.entries(props)) {
+		if (SKIP_LIVE_STATUS_KEYS.has(key)) continue
+
+		if (key === 'status') {
+			results.push({ key: 'status', label: 'Online', kind: 'boolean' })
+			continue
+		}
+
+		if (prop.type === 'object' && prop.properties) {
+			for (const subkey of Object.keys(prop.properties as Record<string, unknown>)) {
+				results.push({ key: `${key}.${subkey}`, label: toLiveLabel(`${key}.${subkey}`), kind: 'value' })
+			}
+			continue
+		}
+
+		results.push({ key, label: toLiveLabel(key), kind: 'value' })
+	}
+
+	return results
 }

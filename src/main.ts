@@ -4,9 +4,24 @@ import { UpdateVariableDefinitions } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
-import { getRequest, postRequest, connectArcadiaSocket, disconnectArcadiaSocket } from './rest.js'
-import { EndpointLiveStatus, Roleset, Keyset, Connection, Port, FeedbacksSchema } from './types.js'
-import { loadSchemasAndRefs, loadAndLogKeysetSettings } from './loadschemas.js'
+import { postRequest, connectArcadiaSocket, disconnectArcadiaSocket } from './rest.js'
+import {
+	EndpointLiveStatus,
+	Endpoint,
+	Roleset,
+	Keyset,
+	Connection,
+	Port,
+	LiveStatusDef,
+	KeyAssignCapabilities,
+	FeedbacksSchema,
+} from './types.js'
+import {
+	loadSchemasAndRefs,
+	loadAndLogKeysetSettings,
+	parseLiveStatusDefs,
+	parseKeyAssignCapabilities,
+} from './loadschemas.js'
 
 export type { EndpointLiveStatus }
 
@@ -23,7 +38,10 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	keysets: Map<number, Keyset> = new Map()
 	connections: Map<number, Connection> = new Map()
 	ports: Map<number, Port> = new Map()
+	gateways: Map<number, Endpoint> = new Map()
 	settingDefs: import('./types.js').SettingDef[] = []
+	liveStatusDefs: LiveStatusDef[] = []
+	keyAssignCapabilities: Record<string, KeyAssignCapabilities> = {}
 	// Maps feedbackId → trigger type ('endpoint' | 'keyset')
 	feedbackTriggers: Map<string, 'endpoint' | 'keyset'> = new Map()
 
@@ -32,13 +50,8 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	}
 
 	async init(config: ModuleConfig): Promise<void> {
-		console.log('Inside init.')
-		this.config = config
-		this.updateStatus(InstanceStatus.Connecting)
-		void this.getAPI()
-		this.updateActions()
-		this.updateFeedbacks()
 		this.updateVariableDefinitions()
+		await this.configUpdated(config)
 	}
 
 	async destroy(): Promise<void> {
@@ -48,6 +61,13 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 
 	async configUpdated(config: ModuleConfig): Promise<void> {
 		this.config = config
+		disconnectArcadiaSocket(this)
+		this.updateStatus(InstanceStatus.Connecting)
+		const ok = await this.getAPI()
+		if (ok) {
+			this.updateActions()
+			this.updateFeedbacks()
+		}
 	}
 
 	getConfigFields(): SomeCompanionConfigField[] {
@@ -66,30 +86,43 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 		UpdateVariableDefinitions(this)
 	}
 
-	async getAPI(): Promise<void> {
+	async getAPI(): Promise<boolean> {
 		const apiBaseUrl = `http://${this.config.host}`
 		try {
-			const postData = {
+			const postResponse = await postRequest<{ jwt: string }>(apiBaseUrl + '/auth/local/login', this, {
 				logemail: 'admin',
 				logpassword: this.config.password,
+			})
+			if (!postResponse) {
+				this.updateStatus(InstanceStatus.ConnectionFailure, 'Login failed')
+				return false
 			}
-			console.log('posting: ', apiBaseUrl + '/auth/local/login')
-			const postResponse = await postRequest<{ jwt: string }>(apiBaseUrl + '/auth/local/login', this, postData) // bearerToken is '' at login
-			console.log('POST Response:', postResponse)
 
-			if (postResponse) {
-				this.bearerToken = postResponse.jwt
-				console.log('\nBEARER TOKEN:\n', this.bearerToken, '\n\n')
-				console.log(await getRequest('http://' + this.config.host + '/api/1/devices', this))
+			this.bearerToken = postResponse.jwt
 
-				const { refSchemas } = await loadSchemasAndRefs(this, `http://${this.config.host}`)
-				this.settingDefs = await loadAndLogKeysetSettings(this, refSchemas)
-				this.updateActions()
-				this.updateFeedbacks()
-				connectArcadiaSocket(this)
-			}
+			const { mainSchema: _mainSchema, refSchemas } = await loadSchemasAndRefs(this, apiBaseUrl)
+			this.settingDefs = await loadAndLogKeysetSettings(this, refSchemas)
+
+			const endpointSchema = refSchemas['response_schemas/endpoint_get.schema.json'] as
+				| Record<string, unknown>
+				| undefined
+			const liveStatusSchema = (endpointSchema?.properties as Record<string, unknown> | undefined)?.liveStatus as
+				| Record<string, unknown>
+				| undefined
+			if (liveStatusSchema?.properties) this.liveStatusDefs = parseLiveStatusDefs(liveStatusSchema)
+
+			const keysetSchema = refSchemas['request_schemas/keysets_put_update_2.schema.json'] as
+				| Record<string, unknown>
+				| undefined
+			if (keysetSchema) this.keyAssignCapabilities = parseKeyAssignCapabilities(keysetSchema)
+
+			connectArcadiaSocket(this)
+			return true
 		} catch (err) {
-			console.error(err as Error)
+			const msg = err instanceof Error ? err.message : String(err)
+			this.log('error', msg)
+			this.updateStatus(InstanceStatus.UnknownError, msg)
+			return false
 		}
 	}
 }

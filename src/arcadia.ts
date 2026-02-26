@@ -103,7 +103,7 @@ export async function assignKeyChannel(
 	keyIndex: number,
 	assignTo: string, // encoded as 'conn:{id}' | 'role:{id}' | 'port:{id}' | ''
 	activationState: KeySlot['activationState'],
-	talkLatch: boolean,
+	talkBtnMode: KeySlot['talkBtnMode'],
 ): Promise<void> {
 	const url = `http://${instance.config.host}/api/2/keysets`
 	const body: Record<string, unknown> = {}
@@ -157,7 +157,7 @@ export async function assignKeyChannel(
 				entities: resolveEntity(),
 				activationState,
 				isCallKey,
-				talkBtnMode: talkLatch ? 'latching' : 'non-latching',
+				talkBtnMode,
 			}
 		})
 
