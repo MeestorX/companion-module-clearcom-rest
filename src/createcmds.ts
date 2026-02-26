@@ -90,7 +90,7 @@ export function buildKeysetActions(instance: ModuleInstance, settings: SettingDe
 					label: 'Value',
 					default: defaultValue,
 					choices,
-					...(setting.supportsIncDec ? { isVisibleExpression: "$(options:mode) == 'absolute'" } : {}),
+					isVisibleExpression: "$(options:mode) == 'absolute'",
 				},
 			],
 			callback: async (action: CompanionActionEvent) => {
@@ -244,7 +244,7 @@ export function buildLiveStatusFeedbacks(
 	}
 
 	const getLiveStatus = (roleId: number) => {
-		for (const [, status] of instance.beltpackStatus) {
+		for (const [, status] of instance.endpointStatus) {
 			if (status.association?.dpId === roleId) return status
 		}
 		return null
@@ -326,7 +326,7 @@ export function buildKeyStateFeedbacks(
 	]
 
 	const getKeyState = (roleId: number, keyIndex: string) => {
-		for (const [, status] of instance.beltpackStatus) {
+		for (const [, status] of instance.endpointStatus) {
 			if (status.association?.dpId === roleId) return status.keyState?.[keyIndex]
 		}
 		return null

@@ -1,7 +1,7 @@
 import io, { Socket } from 'socket.io-client'
 import { InstanceStatus } from '@companion-module/base'
 import ModuleInstance from './main.js'
-import { BeltpackLiveStatus, BeltpackEndpoint, Roleset, EndpointUpdatedEvent, Keyset } from './types.js'
+import { EndpointLiveStatus, Endpoint, Roleset, EndpointUpdatedEvent, Keyset, Connection, Port } from './types.js'
 import { getFeedbackIdsByTrigger } from './createcmds.js'
 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -89,21 +89,23 @@ let socket: Socket | null = null
 async function initialFetch(instance: ModuleInstance): Promise<void> {
 	try {
 		const [endpoints, rolesets] = await Promise.all([
-			getRequest<BeltpackEndpoint[]>(`http://${instance.config.host}/api/1/devices/endpoints`, instance),
+			getRequest<Endpoint[]>(`http://${instance.config.host}/api/1/devices/endpoints`, instance),
 			getRequest<Roleset[]>(`http://${instance.config.host}/api/2/rolesets`, instance),
 		])
 		for (const rs of rolesets) {
 			instance.rolesets.set(rs.id, rs)
 			instance.log('debug', `Roleset ${rs.id}: ${JSON.stringify(rs, null, 2)}`)
 		}
+		await fetchConnections(instance)
+		await fetchPorts(instance)
 		instance.updateActions()
 		instance.updateFeedbacks()
 		await fetchKeysets(instance)
 		for (const ep of endpoints) {
-			if (ep.type === 'FSII-BP' && Object.keys(ep.liveStatus).length > 0) {
-				const status = ep.liveStatus as BeltpackLiveStatus
+			if (Object.keys(ep.liveStatus).length > 0) {
+				const status = ep.liveStatus as EndpointLiveStatus
 				if (status.status === 'online') {
-					instance.beltpackStatus.set(ep.id, { ...status, device_id: ep.device_id })
+					instance.endpointStatus.set(ep.id, { ...status, device_id: ep.device_id })
 					const role = instance.rolesets.get(status.association?.dpId)
 					instance.log('debug', `Initial load: beltpack ${ep.id} (${ep.label}) role=${role?.name ?? 'unknown'}`)
 				}
@@ -120,21 +122,21 @@ function handleEndpointUpdated(instance: ModuleInstance, event: EndpointUpdatedE
 
 	if (event.path === 'liveStatus') {
 		const isEmpty = Object.keys(event.value).length === 0
-		const isOffline = !isEmpty && (event.value as BeltpackLiveStatus).status !== 'online'
+		const isOffline = !isEmpty && (event.value as EndpointLiveStatus).status !== 'online'
 		const affectedRoleId =
-			(event.value as BeltpackLiveStatus).association?.dpId ??
-			instance.beltpackStatus.get(endpointId)?.association?.dpId ??
+			(event.value as EndpointLiveStatus).association?.dpId ??
+			instance.endpointStatus.get(endpointId)?.association?.dpId ??
 			-1
 
 		if (isEmpty || isOffline) {
-			const offlineRole = instance.rolesets.get(instance.beltpackStatus.get(endpointId)?.association?.dpId ?? -1)
-			instance.beltpackStatus.delete(endpointId)
+			const offlineRole = instance.rolesets.get(instance.endpointStatus.get(endpointId)?.association?.dpId ?? -1)
+			instance.endpointStatus.delete(endpointId)
 			instance.log('info', `Beltpack ${endpointId} role=${offlineRole?.name ?? 'unknown'} offline`)
 		} else {
-			const incoming = event.value as BeltpackLiveStatus
-			const existing = instance.beltpackStatus.get(endpointId)
-			const merged: BeltpackLiveStatus = existing ? { ...existing, ...incoming } : incoming
-			instance.beltpackStatus.set(endpointId, merged)
+			const incoming = event.value as EndpointLiveStatus
+			const existing = instance.endpointStatus.get(endpointId)
+			const merged: EndpointLiveStatus = existing ? { ...existing, ...incoming } : incoming
+			instance.endpointStatus.set(endpointId, merged)
 			const role = instance.rolesets.get(merged.association?.dpId)
 			instance.log(
 				'debug',
@@ -153,12 +155,12 @@ function handleEndpointUpdated(instance: ModuleInstance, event: EndpointUpdatedE
 	}
 
 	if (event.path === 'liveStatus.keyState') {
-		const existing = instance.beltpackStatus.get(endpointId)
+		const existing = instance.endpointStatus.get(endpointId)
 		if (existing) {
 			const endpointFbIds2 = getFeedbackIdsByTrigger(instance, 'endpoint')
 			if (endpointFbIds2.length > 0)
 				instance.checkFeedbacks(endpointFbIds2[0] as any, ...(endpointFbIds2.slice(1) as any[]))
-			instance.beltpackStatus.set(endpointId, { ...existing, keyState: event.value })
+			instance.endpointStatus.set(endpointId, { ...existing, keyState: event.value })
 		}
 		return
 	}
@@ -177,6 +179,38 @@ export async function fetchKeysets(instance: ModuleInstance): Promise<void> {
 		if (keysetFbIds.length > 0) instance.checkFeedbacks(keysetFbIds[0] as any, ...(keysetFbIds.slice(1) as any[]))
 	} catch (error) {
 		instance.log('error', `fetchKeysets failed: ${String(error)}`)
+	}
+}
+
+export async function fetchConnections(instance: ModuleInstance): Promise<void> {
+	try {
+		const response = await getRequest<Connection[]>(`http://${instance.config.host}/api/1/connections`, instance)
+		instance.connections.clear()
+		for (const conn of response) {
+			instance.connections.set(conn.id, conn)
+		}
+		instance.log(
+			'debug',
+			`Connections loaded: ${[...instance.connections.values()].map((c) => `${c.id}:${c.label}`).join(', ')}`,
+		)
+	} catch (error) {
+		instance.log('error', `fetchConnections failed: ${String(error)}`)
+	}
+}
+
+export async function fetchPorts(instance: ModuleInstance): Promise<void> {
+	try {
+		const response = await getRequest<Port[]>(`http://${instance.config.host}/api/1/devices/interfaces/ports`, instance)
+		instance.ports.clear()
+		for (const port of response) {
+			instance.ports.set(port.port_id, port)
+		}
+		instance.log(
+			'debug',
+			`Ports loaded: ${[...instance.ports.values()].map((p) => `${p.port_id}:${p.port_label}`).join(', ')}`,
+		)
+	} catch (error) {
+		instance.log('error', `fetchPorts failed: ${String(error)}`)
 	}
 }
 
@@ -272,7 +306,7 @@ export function disconnectArcadiaSocket(instance: ModuleInstance): void {
 
 async function getLiveConnections(instance: ModuleInstance): Promise<void> {
 	try {
-		await getRequest<BeltpackEndpoint[]>(`http://${instance.config.host}/api/1/connections/liveStatus`, instance)
+		await getRequest<Endpoint[]>(`http://${instance.config.host}/api/1/connections/liveStatus`, instance)
 	} catch (error) {
 		instance.log('error', `Failed to get live status: ${String(error)}`)
 	}

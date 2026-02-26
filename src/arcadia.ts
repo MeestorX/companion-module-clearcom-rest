@@ -1,6 +1,6 @@
 import ModuleInstance from './main.js'
 import { getRequest, postRequest, putRequest, fetchKeysets } from './rest.js'
-import { BeltpackEndpoint, SettingDef } from './types.js'
+import { Endpoint, SettingDef, KeySlot, KeysetEntity } from './types.js'
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -9,8 +9,8 @@ export async function remoteMicKill(instance: ModuleInstance, roleId: string): P
 
 	if (roleId) {
 		endpointId =
-			[...instance.beltpackStatus.keys()].find(
-				(id) => instance.beltpackStatus.get(id)?.association?.dpId === Number(roleId),
+			[...instance.endpointStatus.keys()].find(
+				(id) => instance.endpointStatus.get(id)?.association?.dpId === Number(roleId),
 			) ?? null
 		if (endpointId === null) {
 			instance.log('warn', `RMK: no online beltpack found for role ${roleId}`)
@@ -28,9 +28,9 @@ export async function remoteMicKill(instance: ModuleInstance, roleId: string): P
 	}
 }
 
-export async function getLiveStatus(instance: ModuleInstance): Promise<BeltpackEndpoint[] | null> {
+export async function getLiveStatus(instance: ModuleInstance): Promise<Endpoint[] | null> {
 	try {
-		return await getRequest<BeltpackEndpoint[]>(`http://${instance.config.host}/api/1/connections/liveStatus`, instance)
+		return await getRequest<Endpoint[]>(`http://${instance.config.host}/api/1/connections/liveStatus`, instance)
 	} catch (error) {
 		instance.log('error', `Failed to get live status: ${String(error)}`)
 		return null
@@ -78,7 +78,7 @@ export async function setKeyset(
 				resolvedValue = Math.min(vt.max, Math.max(vt.min, next))
 			} else if (vt.kind === 'number-enum') {
 				const idx = vt.values.indexOf(currentValue as number)
-				const next = mode === 'increment' ? idx + 1 : idx - 1
+				const next = mode === 'increment' ? idx - 1 : idx + 1
 				resolvedValue = vt.values[Math.min(vt.values.length - 1, Math.max(0, next))]
 			}
 		}
@@ -94,5 +94,83 @@ export async function setKeyset(
 		void fetchKeysets(instance)
 	} catch (error) {
 		instance.log('error', `setKeyset [${settingKey}] failed: ${String(error)}`)
+	}
+}
+
+export async function assignKeyChannel(
+	instance: ModuleInstance,
+	roleIds: number[],
+	keyIndex: number,
+	assignTo: string, // encoded as 'conn:{id}' | 'role:{id}' | 'port:{id}' | ''
+	activationState: KeySlot['activationState'],
+	talkLatch: boolean,
+): Promise<void> {
+	const url = `http://${instance.config.host}/api/2/keysets`
+	const body: Record<string, unknown> = {}
+
+	const resolveEntity = (): KeysetEntity[] => {
+		if (!assignTo) return []
+		const [kind, idStr] = assignTo.split(':')
+		const id = Number(idStr)
+		if (kind === 'conn') {
+			const conn = instance.connections.get(id)
+			return conn ? [{ res: conn.res, type: 0 }] : []
+		}
+		if (kind === 'role') {
+			const rs = instance.rolesets.get(id)
+			return rs ? [{ res: `/api/2/rolesets/${id}`, type: 3 }] : []
+		}
+		if (kind === 'port') {
+			const port = instance.ports.get(id)
+			return port ? [{ res: port.res, type: 1 }] : []
+		}
+		if (kind === 'special' && idStr === 'call') {
+			return [{ res: '/api/1/special/call', type: 1 }]
+		}
+		return []
+	}
+
+	for (const roleId of roleIds) {
+		const roleset = instance.rolesets.get(roleId)
+		if (!roleset) {
+			instance.log('warn', `assignKeyChannel: no roleset for role ${roleId}`)
+			continue
+		}
+		const session = roleset.sessions ? Object.values(roleset.sessions)[0] : undefined
+		const keysetId = session?.data?.settings?.['defaultRole'] as number | undefined
+		if (keysetId === undefined) {
+			instance.log('warn', `assignKeyChannel: no defaultRole for role ${roleId}`)
+			continue
+		}
+		const keyset = instance.keysets.get(keysetId)
+		if (!keyset) {
+			instance.log('warn', `assignKeyChannel: no cached keyset ${keysetId}`)
+			continue
+		}
+
+		const currentSlots = keyset.settings.keysets ?? []
+		const updatedSlots = currentSlots.map((slot) => {
+			if (slot.keysetIndex !== keyIndex) return slot
+			const isCallKey = assignTo === 'special:call'
+			return {
+				...slot,
+				entities: resolveEntity(),
+				activationState,
+				isCallKey,
+				talkBtnMode: talkLatch ? 'latching' : 'non-latching',
+			}
+		})
+
+		body[String(keysetId)] = { type: keyset.type, settings: { keysets: updatedSlots } }
+	}
+
+	if (Object.keys(body).length === 0) return
+
+	try {
+		const response = await putRequest<{ ok: boolean; message: string }>(url, instance, body)
+		instance.log('info', `assignKeyChannel key=${keyIndex}: ${JSON.stringify(response)}`)
+		void fetchKeysets(instance)
+	} catch (error) {
+		instance.log('error', `assignKeyChannel key=${keyIndex} failed: ${String(error)}`)
 	}
 }

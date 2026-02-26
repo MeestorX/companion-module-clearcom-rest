@@ -1,6 +1,6 @@
 export type KeyState = Record<string, { keysetIndex: number; currentState: string; volume: number }>
 
-export type BeltpackLiveStatus = {
+export type EndpointLiveStatus = {
 	status: string
 	internalStatus: string
 	batteryLevel: number
@@ -20,13 +20,13 @@ export type BeltpackLiveStatus = {
 	device_id: number
 }
 
-export type BeltpackEndpoint = {
+export type Endpoint = {
 	id: number
 	gid: string
 	label: string
 	type: string
 	device_id: number
-	liveStatus: BeltpackLiveStatus | Record<string, never>
+	liveStatus: EndpointLiveStatus | Record<string, never>
 }
 
 export type RolesetSession = {
@@ -53,7 +53,7 @@ export type Roleset = {
 export type EndpointUpdatedLiveStatus = {
 	endpointId: number
 	path: 'liveStatus'
-	value: BeltpackLiveStatus | Record<string, never>
+	value: EndpointLiveStatus | Record<string, never>
 }
 
 export type EndpointUpdatedKeyState = {
@@ -64,10 +64,26 @@ export type EndpointUpdatedKeyState = {
 
 export type EndpointUpdatedEvent = EndpointUpdatedLiveStatus | EndpointUpdatedKeyState
 
+export type KeysetEntity = {
+	res: string
+	gid?: string
+	type: number
+}
+
+export type KeySlot = {
+	keysetIndex: number
+	entities: KeysetEntity[]
+	activationState: 'talk' | 'listen' | 'talkforcelisten'
+	isCallKey: boolean
+	isReplyKey?: boolean
+	talkBtnMode: 'latching' | 'non-latching' | 'disabled'
+}
+
 export type Keyset = {
 	id: number
 	type: string
 	settings: {
+		keysets?: KeySlot[]
 		portInputGain?: number
 		[key: string]: unknown
 	}
@@ -110,7 +126,21 @@ export type FeedbacksSchema = Record<string, BooleanFeedbackSchema | ValueFeedba
 // ─── Live status field definitions ───────────────────────────────────────────
 
 export type LiveStatusDef = {
-	key: string // dot-notation path into BeltpackLiveStatus
+	key: string // dot-notation path into EndpointLiveStatus
 	label: string
 	kind: 'boolean' | 'value'
+}
+
+export type Connection = {
+	id: number
+	label: string
+	res: string
+	type: 'partyline' | 'group' | 'direct'
+}
+
+export type Port = {
+	port_id: number
+	port_label: string
+	res: string
+	port_settings?: { port_splitLabel?: boolean }
 }

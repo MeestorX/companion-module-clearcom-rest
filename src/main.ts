@@ -5,10 +5,10 @@ import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
 import { getRequest, postRequest, connectArcadiaSocket, disconnectArcadiaSocket } from './rest.js'
-import { BeltpackLiveStatus, Roleset, Keyset, FeedbacksSchema } from './types.js'
+import { EndpointLiveStatus, Roleset, Keyset, Connection, Port, FeedbacksSchema } from './types.js'
 import { loadSchemasAndRefs, loadAndLogKeysetSettings } from './loadschemas.js'
 
-export type { BeltpackLiveStatus }
+export type { EndpointLiveStatus }
 
 export interface ModuleTypes extends InstanceTypes {
 	config: ModuleConfig
@@ -18,9 +18,11 @@ export interface ModuleTypes extends InstanceTypes {
 export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	config!: ModuleConfig
 	bearerToken: string = ''
-	beltpackStatus: Map<number, BeltpackLiveStatus> = new Map()
+	endpointStatus: Map<number, EndpointLiveStatus> = new Map()
 	rolesets: Map<number, Roleset> = new Map()
 	keysets: Map<number, Keyset> = new Map()
+	connections: Map<number, Connection> = new Map()
+	ports: Map<number, Port> = new Map()
 	settingDefs: import('./types.js').SettingDef[] = []
 	// Maps feedbackId → trigger type ('endpoint' | 'keyset')
 	feedbackTriggers: Map<string, 'endpoint' | 'keyset'> = new Map()
