@@ -5,12 +5,14 @@ import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
 import { getRequest, postRequest, connectArcadiaSocket, disconnectArcadiaSocket } from './rest.js'
-import { BeltpackLiveStatus, Roleset, Keyset } from './types.js'
+import { BeltpackLiveStatus, Roleset, Keyset, FeedbacksSchema } from './types.js'
+import { loadSchemasAndRefs, loadAndLogKeysetSettings } from './loadschemas.js'
 
 export type { BeltpackLiveStatus }
 
 export interface ModuleTypes extends InstanceTypes {
 	config: ModuleConfig
+	feedbacks: FeedbacksSchema
 }
 
 export default class ModuleInstance extends InstanceBase<ModuleTypes> {
@@ -19,6 +21,9 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	beltpackStatus: Map<number, BeltpackLiveStatus> = new Map()
 	rolesets: Map<number, Roleset> = new Map()
 	keysets: Map<number, Keyset> = new Map()
+	settingDefs: import('./types.js').SettingDef[] = []
+	// Maps feedbackId → trigger type ('endpoint' | 'keyset')
+	feedbackTriggers: Map<string, 'endpoint' | 'keyset'> = new Map()
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -75,6 +80,10 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 				console.log('\nBEARER TOKEN:\n', this.bearerToken, '\n\n')
 				console.log(await getRequest('http://' + this.config.host + '/api/1/devices', this))
 
+				const { refSchemas } = await loadSchemasAndRefs(this, `http://${this.config.host}`)
+				this.settingDefs = await loadAndLogKeysetSettings(this, refSchemas)
+				this.updateActions()
+				this.updateFeedbacks()
 				connectArcadiaSocket(this)
 			}
 		} catch (err) {

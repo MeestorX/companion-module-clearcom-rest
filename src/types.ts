@@ -72,3 +72,45 @@ export type Keyset = {
 		[key: string]: unknown
 	}
 }
+
+// ─── Schema-derived setting definitions ──────────────────────────────────────
+
+export type SettingValueType =
+	| { kind: 'integer'; min: number; max: number; step: number }
+	| { kind: 'number-enum'; values: number[] }
+	| { kind: 'string-enum'; values: string[] }
+	| { kind: 'boolean' }
+
+export type SettingDef = {
+	key: string
+	label: string
+	deviceType: string
+	valueType: SettingValueType
+	supportsIncDec: boolean
+}
+
+// ─── Feedback schema types ────────────────────────────────────────────────────
+
+export type BooleanFeedbackSchema = {
+	type: 'boolean'
+	options: {
+		roleId: string
+	}
+}
+
+export type ValueFeedbackSchema = {
+	type: 'value'
+	options: {
+		roleId: string
+	}
+}
+
+export type FeedbacksSchema = Record<string, BooleanFeedbackSchema | ValueFeedbackSchema>
+
+// ─── Live status field definitions ───────────────────────────────────────────
+
+export type LiveStatusDef = {
+	key: string // dot-notation path into BeltpackLiveStatus
+	label: string
+	kind: 'boolean' | 'value'
+}

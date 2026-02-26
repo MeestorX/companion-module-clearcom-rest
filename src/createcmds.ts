@@ -1,156 +1,364 @@
 import ModuleInstance from './main.js'
-import { getRequest } from './rest.js'
-import { OpenAPIV3 } from 'openapi-types'
-import { promises as fs } from 'fs'
-import path from 'path'
+import {
+	CompanionActionDefinitions,
+	CompanionActionEvent,
+	CompanionFeedbackButtonStyleResult,
+	CompanionValueFeedbackDefinition,
+	CompanionBooleanFeedbackDefinition,
+} from '@companion-module/base'
+import { SettingDef } from './types.js'
+import type { LiveStatusDef } from './types.js'
+import * as arcadia from './arcadia.js'
 
-export type LoadedSchemas = {
-	mainSchema: OpenAPIV3.Document
-	refSchemas: Record<string, OpenAPIV3.SchemaObject>
-}
+// ─── Action builder ───────────────────────────────────────────────────────────
 
-const SCHEMA_CACHE_DIR = './schemas'
-const MAIN_SCHEMA_PATH = path.join(SCHEMA_CACHE_DIR, 'clearcom_api.json')
+type Choice = { id: string; label: string }
 
-export async function loadSchemasAndRefs(self: ModuleInstance, deviceHost: string): Promise<LoadedSchemas> {
-	await fs.mkdir(SCHEMA_CACHE_DIR, { recursive: true })
+function buildValueChoices(settingDef: SettingDef): Choice[] {
+	const vt = settingDef.valueType
 
-	const apiUrl = `${deviceHost}/api/1/schemas/clearcom_api.json`
-	let mainSchema: OpenAPIV3.Document | null = null
-	let downloadedNewMainSchema = false
-	let cachedSchema: OpenAPIV3.Document | null = null
-
-	// Try to load cached schema
-	try {
-		const raw = await fs.readFile(MAIN_SCHEMA_PATH, 'utf8')
-		cachedSchema = JSON.parse(raw) as OpenAPIV3.Document
-		self.log('info', `Loaded cached schema version ${cachedSchema.info.version}`)
-	} catch (_err) {
-		self.log('info', 'No cached schema found')
+	if (vt.kind === 'integer') {
+		const choices: Choice[] = []
+		for (let v = vt.max; v >= vt.min; v -= vt.step) {
+			choices.push({ id: String(v), label: String(v) })
+		}
+		return choices
 	}
 
-	// Try to download live schema
-	try {
-		const res = await getRequest(apiUrl, self)
-		if (res) {
-			const liveSchema = res as OpenAPIV3.Document
+	if (vt.kind === 'number-enum') {
+		return [...vt.values].sort((a, b) => b - a).map((v) => ({ id: String(v), label: String(v) }))
+	}
 
-			// Compare versions
-			if (!cachedSchema || liveSchema.info.version !== cachedSchema.info.version) {
-				mainSchema = liveSchema
-				downloadedNewMainSchema = true
-				await fs.writeFile(MAIN_SCHEMA_PATH, JSON.stringify(liveSchema, null, 2))
-				self.log('info', `Downloaded schema version ${liveSchema.info.version}`)
-			} else {
-				mainSchema = cachedSchema
-				self.log('info', 'Schema versions match, using cached')
+	if (vt.kind === 'string-enum') {
+		return vt.values.map((v) => ({ id: v, label: v }))
+	}
+
+	// boolean
+	return [
+		{ id: 'true', label: 'Enabled' },
+		{ id: 'false', label: 'Disabled' },
+	]
+}
+
+function actionId(setting: SettingDef): string {
+	return `keyset_${setting.deviceType.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${setting.key}`
+}
+
+export function buildKeysetActions(instance: ModuleInstance, settings: SettingDef[]): CompanionActionDefinitions {
+	const actions: CompanionActionDefinitions = {}
+
+	const roleChoices = [...instance.rolesets.values()].map((rs) => ({
+		id: String(rs.id),
+		label: rs.name,
+	}))
+
+	for (const setting of settings) {
+		const choices = buildValueChoices(setting)
+		const defaultValue = choices[0]?.id ?? ''
+
+		const modeChoices: Choice[] = [{ id: 'absolute', label: 'Absolute' }]
+		if (setting.supportsIncDec) {
+			modeChoices.push({ id: 'increment', label: 'Increment' })
+			modeChoices.push({ id: 'decrement', label: 'Decrement' })
+		}
+
+		actions[actionId(setting)] = {
+			name: `[${setting.deviceType}] ${setting.label}`,
+			options: [
+				{
+					type: 'multidropdown',
+					id: 'roleIds',
+					label: 'Beltpack',
+					default: [],
+					choices: roleChoices,
+				},
+				...(setting.supportsIncDec
+					? [
+							{
+								type: 'dropdown' as const,
+								id: 'mode',
+								label: 'Mode',
+								default: 'absolute',
+								choices: modeChoices,
+								disableAutoExpression: true,
+							},
+						]
+					: []),
+				{
+					type: 'dropdown' as const,
+					id: 'value',
+					label: 'Value',
+					default: defaultValue,
+					choices,
+					...(setting.supportsIncDec ? { isVisibleExpression: "$(options:mode) == 'absolute'" } : {}),
+				},
+			],
+			callback: async (action: CompanionActionEvent) => {
+				const roleIds = (action.options.roleIds as string[]).map(Number)
+				const mode = action.options.mode as 'absolute' | 'increment' | 'decrement'
+				const rawValue = action.options.value as string
+				const value =
+					setting.valueType.kind === 'boolean'
+						? rawValue === 'true'
+						: setting.valueType.kind === 'string-enum'
+							? rawValue
+							: Number(rawValue)
+				await arcadia.setKeyset(instance, roleIds, setting.key, value, mode, setting)
+			},
+		}
+	}
+
+	return actions
+}
+
+// ─── Feedback helpers ─────────────────────────────────────────────────────────
+
+export function getFeedbackIdsByTrigger(instance: ModuleInstance, trigger: 'endpoint' | 'keyset'): string[] {
+	return [...instance.feedbackTriggers.entries()].filter(([, t]) => t === trigger).map(([id]) => id)
+}
+
+// ─── Keyset feedback builder ──────────────────────────────────────────────────
+
+function feedbackId(setting: SettingDef): string {
+	return `keyset_${setting.deviceType.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${setting.key}`
+}
+
+export function buildKeysetFeedbacks(
+	instance: ModuleInstance,
+	settings: SettingDef[],
+): Record<
+	string,
+	CompanionBooleanFeedbackDefinition<{ roleId: string }> | CompanionValueFeedbackDefinition<{ roleId: string }>
+> {
+	const feedbacks: Record<
+		string,
+		CompanionBooleanFeedbackDefinition<{ roleId: string }> | CompanionValueFeedbackDefinition<{ roleId: string }>
+	> = {}
+
+	const roleChoices = [...instance.rolesets.values()].map((rs) => ({
+		id: String(rs.id),
+		label: rs.name,
+	}))
+
+	const roleOption = {
+		type: 'dropdown' as const,
+		id: 'roleId' as const,
+		label: 'Beltpack',
+		default: roleChoices[0]?.id ?? '',
+		choices: roleChoices,
+	}
+
+	for (const setting of settings) {
+		const id = feedbackId(setting)
+
+		if (setting.valueType.kind === 'boolean') {
+			feedbacks[id] = {
+				type: 'boolean',
+				name: `[${setting.deviceType}] ${setting.label}`,
+				defaultStyle: { bgcolor: 0x00ff00, color: 0x000000 } satisfies Partial<CompanionFeedbackButtonStyleResult>,
+				options: [roleOption],
+				unsubscribe: (feedback) => {
+					instance.feedbackTriggers.delete(feedback.feedbackId)
+				},
+				callback: (feedback) => {
+					instance.feedbackTriggers.set(feedback.feedbackId, 'keyset')
+					const roleId = Number(feedback.options.roleId)
+					const roleset = instance.rolesets.get(roleId)
+					if (!roleset) return false
+					const session = roleset.sessions ? Object.values(roleset.sessions)[0] : undefined
+					const keysetId = session?.data?.settings?.['defaultRole'] as number | undefined
+					if (keysetId === undefined) return false
+					const keyset = instance.keysets.get(keysetId)
+					return keyset?.settings[setting.key] === true
+				},
 			}
 		} else {
-			mainSchema = cachedSchema
-			self.log('warn', 'Failed to download schema, using cached version')
-		}
-	} catch (err) {
-		mainSchema = cachedSchema
-		self.log('warn', `Error downloading schema: ${err}, using cached version`)
-	}
-
-	if (!mainSchema) {
-		self.log('error', 'No schema available (cached or live)')
-		return { mainSchema: {} as OpenAPIV3.Document, refSchemas: {} }
-	}
-
-	const refSchemas: Record<string, OpenAPIV3.SchemaObject> = {}
-	const refs: Set<string> = new Set()
-
-	const findRefs = (obj: any) => {
-		if (typeof obj !== 'object' || obj === null) return
-		for (const key in obj) {
-			if (key === '$ref' && typeof obj[key] === 'string') {
-				refs.add(obj[key])
-			} else {
-				findRefs(obj[key])
+			feedbacks[id] = {
+				type: 'value',
+				name: `[${setting.deviceType}] ${setting.label}`,
+				options: [roleOption],
+				unsubscribe: (feedback) => {
+					instance.feedbackTriggers.delete(feedback.feedbackId)
+				},
+				callback: (feedback) => {
+					instance.feedbackTriggers.set(feedback.feedbackId, 'keyset')
+					const roleId = Number(feedback.options.roleId)
+					const roleset = instance.rolesets.get(roleId)
+					if (!roleset) return null
+					const session = roleset.sessions ? Object.values(roleset.sessions)[0] : undefined
+					const keysetId = session?.data?.settings?.['defaultRole'] as number | undefined
+					if (keysetId === undefined) return null
+					const keyset = instance.keysets.get(keysetId)
+					return (keyset?.settings[setting.key] ?? null) as import('@companion-module/base').JsonValue
+				},
 			}
 		}
 	}
 
-	findRefs(mainSchema)
+	return feedbacks
+}
 
-	for (const ref of refs) {
-		if (ref.startsWith('#')) continue // internal OpenAPI ref, not a file
-		console.log('found ref: ', ref)
-		const filePath = path.join(SCHEMA_CACHE_DIR, ref)
-		let shouldDownload = false
+// ─── Live status feedback builder ─────────────────────────────────────────────
 
-		try {
-			await fs.access(filePath)
-			if (downloadedNewMainSchema) {
-				shouldDownload = true
-			}
-		} catch {
-			shouldDownload = true
+const LIVE_STATUS_DEFS: LiveStatusDef[] = [
+	{ key: 'status', label: 'Online', kind: 'boolean' },
+	{ key: 'batteryLevel', label: 'Battery Level', kind: 'value' },
+	{ key: 'batteryStatus', label: 'Battery Status', kind: 'value' },
+	{ key: 'rssi', label: 'RSSI', kind: 'value' },
+	{ key: 'linkQuality', label: 'Link Quality', kind: 'value' },
+	{ key: 'frameErrorRate', label: 'Frame Error Rate', kind: 'value' },
+	{ key: 'longevity.hours', label: 'Remaining Hours', kind: 'value' },
+	{ key: 'longevity.minutes', label: 'Remaining Minutes', kind: 'value' },
+]
+
+function resolvePath(obj: unknown, path: string): unknown {
+	return path.split('.').reduce((acc, key) => (acc as Record<string, unknown>)?.[key], obj)
+}
+
+function liveStatusFeedbackId(def: LiveStatusDef): string {
+	return `live_${def.key.replace('.', '_')}`
+}
+
+export function buildLiveStatusFeedbacks(
+	instance: ModuleInstance,
+): Record<
+	string,
+	CompanionBooleanFeedbackDefinition<{ roleId: string }> | CompanionValueFeedbackDefinition<{ roleId: string }>
+> {
+	const feedbacks: Record<
+		string,
+		CompanionBooleanFeedbackDefinition<{ roleId: string }> | CompanionValueFeedbackDefinition<{ roleId: string }>
+	> = {}
+
+	const roleChoices = [...instance.rolesets.values()].map((rs) => ({
+		id: String(rs.id),
+		label: rs.name,
+	}))
+
+	const roleOption = {
+		type: 'dropdown' as const,
+		id: 'roleId' as const,
+		label: 'Beltpack',
+		default: roleChoices[0]?.id ?? '',
+		choices: roleChoices,
+	}
+
+	const getLiveStatus = (roleId: number) => {
+		for (const [, status] of instance.beltpackStatus) {
+			if (status.association?.dpId === roleId) return status
 		}
+		return null
+	}
 
-		if (shouldDownload) {
-			const refUrl = `${deviceHost}/api/1/schemas/${ref}`
-			try {
-				console.log('fetching: ', refUrl)
-				const res = await fetch(refUrl, {
-					headers: { Authorization: `Bearer ${self.bearerToken}` },
-				})
-				if (!res.ok) {
-					self.log('warn', `Skipping $ref ${ref}: ${res.status}`)
-					continue
-				}
-				const body = await res.text()
-				await fs.mkdir(path.dirname(filePath), { recursive: true })
-				await fs.writeFile(filePath, body)
-				refSchemas[ref] = JSON.parse(body)
-			} catch {
-				continue
+	for (const def of LIVE_STATUS_DEFS) {
+		const id = liveStatusFeedbackId(def)
+
+		if (def.kind === 'boolean') {
+			feedbacks[id] = {
+				type: 'boolean',
+				name: `[Beltpack] ${def.label}`,
+				defaultStyle: { bgcolor: 0x00ff00, color: 0x000000 } satisfies Partial<CompanionFeedbackButtonStyleResult>,
+				options: [roleOption],
+				unsubscribe: (feedback) => {
+					instance.feedbackTriggers.delete(feedback.feedbackId)
+				},
+				callback: (feedback) => {
+					const roleId = Number(feedback.options.roleId)
+					instance.feedbackTriggers.set(feedback.feedbackId, 'endpoint')
+					const status = getLiveStatus(roleId)
+					return resolvePath(status, def.key) === 'online'
+				},
 			}
 		} else {
-			try {
-				const contents = await fs.readFile(filePath, 'utf8')
-				refSchemas[ref] = JSON.parse(contents)
-			} catch {
-				continue
+			feedbacks[id] = {
+				type: 'value',
+				name: `[Beltpack] ${def.label}`,
+				options: [roleOption],
+				unsubscribe: (feedback) => {
+					instance.feedbackTriggers.delete(feedback.feedbackId)
+				},
+				callback: (feedback) => {
+					instance.feedbackTriggers.set(feedback.feedbackId, 'endpoint')
+					const status = getLiveStatus(Number(feedback.options.roleId))
+					return (resolvePath(status, def.key) ?? null) as import('@companion-module/base').JsonValue
+				},
 			}
 		}
 	}
 
-	return { mainSchema, refSchemas }
+	return feedbacks
 }
 
-/**
- * Check if a specific endpoint exists in the schema
- */
-export function supportsEndpoint(schema: OpenAPIV3.Document, path: string, method: string = 'post'): boolean {
-	const pathItem = schema.paths?.[path]
-	if (!pathItem) return false
-	return method.toLowerCase() in pathItem
-}
+// ─── Key state feedback builder ───────────────────────────────────────────────
 
-/**
- * Get the API version from the schema
- */
-export function getSchemaVersion(schema: OpenAPIV3.Document): string {
-	return schema.info?.version || 'unknown'
-}
+const KEY_COUNT = 5 // FSII-BP has 5 keys (0-4)
 
-/**
- * Get endpoint documentation from schema
- */
-export function getEndpointInfo(
-	schema: OpenAPIV3.Document,
-	path: string,
-	method: string = 'post',
-): { summary?: string; description?: string } | null {
-	const pathItem = schema.paths?.[path]
-	if (!pathItem) return null
-	const operation = pathItem[method.toLowerCase() as keyof typeof pathItem] as OpenAPIV3.OperationObject | undefined
-	if (!operation) return null
-	return {
-		summary: operation.summary,
-		description: operation.description,
+export function buildKeyStateFeedbacks(
+	instance: ModuleInstance,
+): Record<string, CompanionValueFeedbackDefinition<{ roleId: string; keyIndex: string }>> {
+	const feedbacks: Record<string, CompanionValueFeedbackDefinition<{ roleId: string; keyIndex: string }>> = {}
+
+	const roleChoices = [...instance.rolesets.values()].map((rs) => ({
+		id: String(rs.id),
+		label: rs.name,
+	}))
+
+	const keyChoices = Array.from({ length: KEY_COUNT }, (_, i) => ({
+		id: String(i),
+		label: `Key ${i + 1}`,
+	}))
+
+	const baseOptions = [
+		{
+			type: 'dropdown' as const,
+			id: 'roleId' as const,
+			label: 'Beltpack',
+			default: roleChoices[0]?.id ?? '',
+			choices: roleChoices,
+		},
+		{
+			type: 'dropdown' as const,
+			id: 'keyIndex' as const,
+			label: 'Key',
+			default: '0',
+			choices: keyChoices,
+		},
+	]
+
+	const getKeyState = (roleId: number, keyIndex: string) => {
+		for (const [, status] of instance.beltpackStatus) {
+			if (status.association?.dpId === roleId) return status.keyState?.[keyIndex]
+		}
+		return null
 	}
+
+	feedbacks['key_state'] = {
+		type: 'value',
+		name: '[Key] State',
+		options: baseOptions,
+		unsubscribe: (feedback) => {
+			instance.feedbackTriggers.delete(feedback.feedbackId)
+		},
+		callback: (feedback) => {
+			instance.feedbackTriggers.set(feedback.feedbackId, 'endpoint')
+			const key = getKeyState(Number(feedback.options.roleId), feedback.options.keyIndex)
+			return (key?.currentState ?? null) as import('@companion-module/base').JsonValue
+		},
+	}
+
+	feedbacks['key_volume'] = {
+		type: 'value',
+		name: '[Key] Volume',
+		options: baseOptions,
+		unsubscribe: (feedback) => {
+			instance.feedbackTriggers.delete(feedback.feedbackId)
+		},
+		callback: (feedback) => {
+			instance.feedbackTriggers.set(feedback.feedbackId, 'endpoint')
+			const key = getKeyState(Number(feedback.options.roleId), feedback.options.keyIndex)
+			return (key?.volume ?? null) as import('@companion-module/base').JsonValue
+		},
+	}
+
+	return feedbacks
 }

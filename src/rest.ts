@@ -2,14 +2,15 @@ import io, { Socket } from 'socket.io-client'
 import { InstanceStatus } from '@companion-module/base'
 import ModuleInstance from './main.js'
 import { BeltpackLiveStatus, BeltpackEndpoint, Roleset, EndpointUpdatedEvent, Keyset } from './types.js'
+import { getFeedbackIdsByTrigger } from './createcmds.js'
 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
-
 export async function getRequest<R>(url: string, instance: ModuleInstance): Promise<R> {
 	const headers: Record<string, string> = {
 		Accept: 'application/json',
 	}
 	if (instance.bearerToken) headers['Authorization'] = `Bearer ${instance.bearerToken}`
+	instance.log('debug', `GET ${url}`)
 	const response = await fetch(url, { method: 'GET', headers })
 	if (!response.ok) {
 		throw new Error(`GET ${url} failed: ${response.status} ${response.statusText}`)
@@ -24,6 +25,7 @@ export async function postRequest<R>(url: string, instance: ModuleInstance, body
 		'Content-Type': 'application/json',
 	}
 	if (instance.bearerToken) headers['Authorization'] = `Bearer ${instance.bearerToken}`
+	instance.log('debug', `POST ${url} ${JSON.stringify(body)}`)
 	const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
 	if (!response.ok) {
 		throw new Error(`POST ${url} failed: ${response.status} ${response.statusText}`)
@@ -38,6 +40,7 @@ export async function putRequest<R>(url: string, instance: ModuleInstance, body:
 		'Content-Type': 'application/json',
 	}
 	if (instance.bearerToken) headers['Authorization'] = `Bearer ${instance.bearerToken}`
+	instance.log('debug', `PUT ${url} ${JSON.stringify(body)}`)
 	const response = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) })
 	if (!response.ok) {
 		throw new Error(`PUT ${url} failed: ${response.status} ${response.statusText}`)
@@ -47,7 +50,6 @@ export async function putRequest<R>(url: string, instance: ModuleInstance, body:
 }
 
 // ─── Keepalive ────────────────────────────────────────────────────────────────
-
 let keepaliveTimer: ReturnType<typeof setTimeout> | null = null
 const KEEPALIVE_MS = 30_000
 
@@ -77,12 +79,11 @@ async function refreshToken(instance: ModuleInstance): Promise<void> {
 		instance.log('debug', 'Token refreshed')
 	} catch (error) {
 		instance.log('warn', `Token refresh failed: ${String(error)}`)
-		resetKeepalive(instance) // restart timer even on failure
+		resetKeepalive(instance)
 	}
 }
 
 // ─── Socket ───────────────────────────────────────────────────────────────────
-
 let socket: Socket | null = null
 
 async function initialFetch(instance: ModuleInstance): Promise<void> {
@@ -91,14 +92,13 @@ async function initialFetch(instance: ModuleInstance): Promise<void> {
 			getRequest<BeltpackEndpoint[]>(`http://${instance.config.host}/api/1/devices/endpoints`, instance),
 			getRequest<Roleset[]>(`http://${instance.config.host}/api/2/rolesets`, instance),
 		])
-
 		for (const rs of rolesets) {
 			instance.rolesets.set(rs.id, rs)
 			instance.log('debug', `Roleset ${rs.id}: ${JSON.stringify(rs, null, 2)}`)
 		}
 		instance.updateActions()
+		instance.updateFeedbacks()
 		await fetchKeysets(instance)
-
 		for (const ep of endpoints) {
 			if (ep.type === 'FSII-BP' && Object.keys(ep.liveStatus).length > 0) {
 				const status = ep.liveStatus as BeltpackLiveStatus
@@ -121,6 +121,10 @@ function handleEndpointUpdated(instance: ModuleInstance, event: EndpointUpdatedE
 	if (event.path === 'liveStatus') {
 		const isEmpty = Object.keys(event.value).length === 0
 		const isOffline = !isEmpty && (event.value as BeltpackLiveStatus).status !== 'online'
+		const affectedRoleId =
+			(event.value as BeltpackLiveStatus).association?.dpId ??
+			instance.beltpackStatus.get(endpointId)?.association?.dpId ??
+			-1
 
 		if (isEmpty || isOffline) {
 			const offlineRole = instance.rolesets.get(instance.beltpackStatus.get(endpointId)?.association?.dpId ?? -1)
@@ -139,12 +143,21 @@ function handleEndpointUpdated(instance: ModuleInstance, event: EndpointUpdatedE
 					`remaining=${merged.longevity.hours}h${merged.longevity.minutes}m`,
 			)
 		}
+		instance.log(
+			'debug',
+			`EndpointUpdated: affectedRoleId=${affectedRoleId} endpointFeedbacks=${JSON.stringify(getFeedbackIdsByTrigger(instance, 'endpoint'))}`,
+		)
+		const endpointFbIds = getFeedbackIdsByTrigger(instance, 'endpoint')
+		if (endpointFbIds.length > 0) instance.checkFeedbacks(endpointFbIds[0] as any, ...(endpointFbIds.slice(1) as any[]))
 		return
 	}
 
 	if (event.path === 'liveStatus.keyState') {
 		const existing = instance.beltpackStatus.get(endpointId)
 		if (existing) {
+			const endpointFbIds2 = getFeedbackIdsByTrigger(instance, 'endpoint')
+			if (endpointFbIds2.length > 0)
+				instance.checkFeedbacks(endpointFbIds2[0] as any, ...(endpointFbIds2.slice(1) as any[]))
 			instance.beltpackStatus.set(endpointId, { ...existing, keyState: event.value })
 		}
 		return
@@ -159,6 +172,9 @@ export async function fetchKeysets(instance: ModuleInstance): Promise<void> {
 			instance.keysets.set(keyset.id, keyset)
 		}
 		instance.log('debug', `Keysets loaded: ${[...instance.keysets.keys()].join(', ')}`)
+		// Check all keyset feedback type IDs directly — their callbacks only fire when explicitly checked
+		const keysetFbIds = getFeedbackIdsByTrigger(instance, 'keyset')
+		if (keysetFbIds.length > 0) instance.checkFeedbacks(keysetFbIds[0] as any, ...(keysetFbIds.slice(1) as any[]))
 	} catch (error) {
 		instance.log('error', `fetchKeysets failed: ${String(error)}`)
 	}
@@ -231,6 +247,7 @@ export function connectArcadiaSocket(instance: ModuleInstance): void {
 		'init',
 		'EndpointUpdated',
 	])
+
 	const originalOnevent = (socket as unknown as { onevent: (packet: { data: unknown[] }) => void }).onevent.bind(socket)
 	;(socket as unknown as { onevent: (packet: { data: unknown[] }) => void }).onevent = (packet) => {
 		const [event, ...args] = packet.data

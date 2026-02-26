@@ -1,6 +1,6 @@
 import ModuleInstance from './main.js'
-import { getRequest, postRequest, putRequest } from './rest.js'
-import { BeltpackEndpoint } from './types.js'
+import { getRequest, postRequest, putRequest, fetchKeysets } from './rest.js'
+import { BeltpackEndpoint, SettingDef } from './types.js'
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -37,11 +37,13 @@ export async function getLiveStatus(instance: ModuleInstance): Promise<BeltpackE
 	}
 }
 
-export async function setInputGain(
+export async function setKeyset(
 	instance: ModuleInstance,
 	roleIds: number[],
-	gain: number,
-	relative: boolean,
+	settingKey: string,
+	value: unknown,
+	mode: 'absolute' | 'increment' | 'decrement',
+	settingDef: SettingDef,
 ): Promise<void> {
 	const url = `http://${instance.config.host}/api/2/keysets`
 	const body: Record<string, unknown> = {}
@@ -49,34 +51,48 @@ export async function setInputGain(
 	for (const roleId of roleIds) {
 		const roleset = instance.rolesets.get(roleId)
 		if (!roleset) {
-			instance.log('warn', `setInputGain: no roleset found for role ${roleId}`)
+			instance.log('warn', `setKeyset: no roleset for role ${roleId}`)
 			continue
 		}
-		const keysetId = roleset.sessions?.['B.FSII']?.data?.settings?.['defaultRole'] as number | undefined
+		const session = roleset.sessions ? Object.values(roleset.sessions)[0] : undefined
+		const keysetId = session?.data?.settings?.['defaultRole'] as number | undefined
 		if (keysetId === undefined) {
-			instance.log('warn', `setInputGain: no defaultRole found for role ${roleId}`)
+			instance.log('warn', `setKeyset: no defaultRole for role ${roleId}`)
 			continue
 		}
 
-		let value = gain
-		if (relative) {
+		let resolvedValue = value
+
+		if (mode !== 'absolute') {
 			const current = instance.keysets.get(keysetId)
 			if (!current) {
-				instance.log('warn', `setInputGain: no cached keyset found for keysetId ${keysetId}`)
+				instance.log('warn', `setKeyset: no cached keyset for keysetId ${keysetId}`)
 				continue
 			}
-			value = Math.min(15, Math.max(-70, (current.settings.portInputGain ?? 0) + gain))
+			const currentValue = current.settings[settingKey]
+			const vt = settingDef.valueType
+
+			if (vt.kind === 'integer') {
+				const cur = (currentValue as number) ?? 0
+				const next = mode === 'increment' ? cur + vt.step : cur - vt.step
+				resolvedValue = Math.min(vt.max, Math.max(vt.min, next))
+			} else if (vt.kind === 'number-enum') {
+				const idx = vt.values.indexOf(currentValue as number)
+				const next = mode === 'increment' ? idx + 1 : idx - 1
+				resolvedValue = vt.values[Math.min(vt.values.length - 1, Math.max(0, next))]
+			}
 		}
 
-		body[String(keysetId)] = { type: 'FSII-BP', settings: { portInputGain: value } }
+		body[String(keysetId)] = { type: settingDef.deviceType, settings: { [settingKey]: resolvedValue } }
 	}
 
 	if (Object.keys(body).length === 0) return
 
 	try {
 		const response = await putRequest<{ ok: boolean; message: string }>(url, instance, body)
-		instance.log('info', `setInputGain: ${JSON.stringify(response, null, 2)}`)
+		instance.log('info', `setKeyset [${settingKey}]: ${JSON.stringify(response)}`)
+		void fetchKeysets(instance)
 	} catch (error) {
-		instance.log('error', `setInputGain failed: ${String(error)}`)
+		instance.log('error', `setKeyset [${settingKey}] failed: ${String(error)}`)
 	}
 }
