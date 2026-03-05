@@ -1,4 +1,8 @@
 import ModuleInstance from './main.js'
+import { makeLogger } from './logger.js'
+
+let _instance: ModuleInstance | null = null
+const log = makeLogger('loadSchemas', () => _instance?.config)
 import { getRequest } from './network.js'
 import { OpenAPIV3 } from 'openapi-types'
 import { promises as fs } from 'fs'
@@ -15,6 +19,7 @@ const SCHEMA_CACHE_DIR = './schemas'
 const MAIN_SCHEMA_PATH = path.join(SCHEMA_CACHE_DIR, 'clearcom_api.json')
 
 export async function loadSchemasAndRefs(self: ModuleInstance, deviceHost: string): Promise<LoadedSchemas> {
+	_instance = self
 	await fs.mkdir(SCHEMA_CACHE_DIR, { recursive: true })
 
 	const apiUrl = `${deviceHost}/api/1/schemas/clearcom_api.json`
@@ -25,9 +30,9 @@ export async function loadSchemasAndRefs(self: ModuleInstance, deviceHost: strin
 	try {
 		const raw = await fs.readFile(MAIN_SCHEMA_PATH, 'utf8')
 		cachedSchema = JSON.parse(raw) as OpenAPIV3.Document
-		self.log('info', `Loaded cached schema version ${cachedSchema.info.version}`)
+		log.info(`Loaded cached schema version ${cachedSchema.info.version}`)
 	} catch (_err) {
-		self.log('info', 'No cached schema found')
+		log.info('No cached schema found')
 	}
 
 	try {
@@ -38,18 +43,18 @@ export async function loadSchemasAndRefs(self: ModuleInstance, deviceHost: strin
 				mainSchema = liveSchema
 				downloadedNewMainSchema = true
 				await fs.writeFile(MAIN_SCHEMA_PATH, JSON.stringify(liveSchema, null, 2))
-				self.log('info', `Downloaded schema version ${liveSchema.info.version}`)
+				log.info(`Downloaded schema version ${liveSchema.info.version}`)
 			} else {
 				mainSchema = cachedSchema
-				self.log('info', 'Schema versions match, using cached')
+				log.info('Schema versions match, using cached')
 			}
 		} else {
 			mainSchema = cachedSchema
-			self.log('warn', 'Failed to download schema, using cached version')
+			log.warn('Failed to download schema, using cached version')
 		}
 	} catch (err) {
 		mainSchema = cachedSchema
-		self.log('warn', `Error downloading schema: ${err}, using cached version`)
+		log.warn(`Error downloading schema: ${err}, using cached version`)
 	}
 
 	if (!mainSchema) {
@@ -91,7 +96,7 @@ export async function loadSchemasAndRefs(self: ModuleInstance, deviceHost: strin
 					headers: { Authorization: `Bearer ${self.bearerToken}` },
 				})
 				if (!res.ok) {
-					self.log('warn', `Skipping $ref ${ref}: ${res.status}`)
+					log.warn(`Skipping $ref ${ref}: ${res.status}`)
 					continue
 				}
 				const body = await res.text()

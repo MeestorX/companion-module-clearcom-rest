@@ -9,8 +9,13 @@ type Choice = { id: string; label: string }
 
 function valueChoices(vt: SettingValueType): Choice[] {
 	if (vt.kind === 'integer') {
+		const min = Math.max(vt.min, -100) || 0
+		const max = Math.min(vt.max, 100) || 0
+		if (vt.step === 0) return []
+		const count = Math.floor((max - min) / vt.step) + 1
+		if (count > 100) return []
 		const choices: Choice[] = []
-		for (let v = vt.max; v >= vt.min; v -= vt.step) choices.push({ id: String(v), label: String(v) })
+		for (let v = max; v >= min; v -= vt.step) choices.push({ id: String(v), label: String(v) })
 		return choices
 	}
 	if (vt.kind === 'number-enum')
@@ -91,7 +96,6 @@ function formatEnumLabel(value: string): string {
 
 function buildDefsActions(instance: ModuleInstance): CompanionActionDefinitions {
 	const actions: CompanionActionDefinitions = {}
-
 	const rChoices = arcadia.roleChoices(instance)
 	const epChoices = arcadia.endpointChoices(instance)
 

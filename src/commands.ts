@@ -11,8 +11,8 @@ export function connect(instance: ModuleInstance): void {
 	connectSocket(instance)
 }
 
-export function disconnect(instance: ModuleInstance): void {
-	disconnectSocket(instance)
+export function disconnect(): void {
+	disconnectSocket()
 }
 
 // ─── Schema-level skip lists ─────────────────────────────────────────────────

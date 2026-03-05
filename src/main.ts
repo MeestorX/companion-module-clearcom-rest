@@ -12,6 +12,7 @@ import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
 import { postRequest } from './network.js'
+import { makeLogger } from './logger.js'
 import { connect, disconnect, filterControlDefs } from './commands.js'
 import { loadSchemasAndRefs } from './loadSchemas.js'
 import { buildControlDefs, parseKeyAssignCapabilities } from './parseSchemas.js'
@@ -48,6 +49,8 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	// ─── Nulling state ────────────────────────────────────────────────────────
 	nullingStatus: Map<number, string> = new Map()
 
+	private readonly _log = makeLogger('main', () => this.config)
+
 	constructor(internal: unknown) {
 		super(internal)
 	}
@@ -58,13 +61,13 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	}
 
 	async destroy(): Promise<void> {
-		this.log('debug', 'destroy')
-		disconnect(this)
+		this._log.debug('destroy')
+		disconnect()
 	}
 
 	async configUpdated(config: ModuleConfig): Promise<void> {
 		this.config = config
-		disconnect(this)
+		disconnect()
 		this.updateStatus(InstanceStatus.Connecting)
 		await this.connect()
 	}
@@ -134,15 +137,14 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 			const loaded = await loadSchemasAndRefs(this, apiBaseUrl)
 			this.controlDefs = filterControlDefs(buildControlDefs(loaded))
 			this.keyAssignCapabilities = parseKeyAssignCapabilities(loaded)
-			this.log(
-				'info',
+			this._log.info(
 				`Schema version: ${loaded.mainSchema.info.version} — ${this.controlDefs.length} control defs loaded`,
 			)
 
 			connect(this)
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err)
-			this.log('error', msg)
+			this._log.error(msg)
 			this.updateStatus(InstanceStatus.UnknownError, msg)
 		}
 	}

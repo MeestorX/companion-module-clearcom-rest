@@ -1,4 +1,8 @@
 import ModuleInstance from './main.js'
+import { makeLogger } from './logger.js'
+
+let _instance: ModuleInstance | null = null
+const log = makeLogger('arcadia', () => _instance?.config)
 import {
 	getRequest,
 	postRequest,
@@ -29,6 +33,7 @@ export function getField(record: DeviceRecord, field: string): unknown {
 
 // Get the roleset currently assigned to an endpoint (via liveStatus.association.dpId)
 export function getRoleFromEndpoint(instance: ModuleInstance, endpointId: number): DeviceRecord | null {
+	_instance = instance
 	const status = instance.endpointStatus.get(endpointId)
 	if (!status) return null
 	const association = status['association'] as DeviceRecord | undefined
@@ -39,6 +44,7 @@ export function getRoleFromEndpoint(instance: ModuleInstance, endpointId: number
 
 // Get all endpoints currently assigned to a roleset
 export function getEndpointsFromRole(instance: ModuleInstance, roleId: number): DeviceRecord[] {
+	_instance = instance
 	return [...instance.endpointStatus.entries()]
 		.filter(([_, status]) => {
 			const association = status['association'] as DeviceRecord | undefined
@@ -50,6 +56,7 @@ export function getEndpointsFromRole(instance: ModuleInstance, roleId: number): 
 
 // Build a choice label for an endpoint: "Label (ID)" or "Label (ID) - RoleName"
 export function endpointChoiceLabel(instance: ModuleInstance, ep: DeviceRecord): string {
+	_instance = instance
 	const id = ep['id'] as number
 	const label = ep['label'] as string
 	const role = getRoleFromEndpoint(instance, id)
@@ -58,7 +65,11 @@ export function endpointChoiceLabel(instance: ModuleInstance, ep: DeviceRecord):
 }
 
 // Build role choices: "Name (ID)"
-export function roleChoices(instance: ModuleInstance): { id: string; label: string }[] {
+export function roleChoices(instance: ModuleInstance): {
+	id: string
+	label: string
+}[] {
+	_instance = instance
 	return [...instance.rolesets.values()].map((rs) => ({
 		id: String(rs['id'] as number),
 		label: `${rs['name'] as string} (${rs['id'] as number})`,
@@ -66,7 +77,11 @@ export function roleChoices(instance: ModuleInstance): { id: string; label: stri
 }
 
 // Build endpoint choices: "Label (ID)" or "Label (ID) - RoleName"
-export function endpointChoices(instance: ModuleInstance): { id: string; label: string }[] {
+export function endpointChoices(instance: ModuleInstance): {
+	id: string
+	label: string
+}[] {
+	_instance = instance
 	return [...instance.endpoints.values()].map((ep) => ({
 		id: String(ep['id'] as number),
 		label: endpointChoiceLabel(instance, ep),
@@ -74,7 +89,11 @@ export function endpointChoices(instance: ModuleInstance): { id: string; label: 
 }
 
 // Build port choices: "Label (Desc)" e.g. "Andy (2W Port A)"
-export function portChoices(instance: ModuleInstance): { id: string; label: string }[] {
+export function portChoices(instance: ModuleInstance): {
+	id: string
+	label: string
+}[] {
+	_instance = instance
 	return [...instance.ports.values()].map((p) => ({
 		id: String(p['port_id'] as number),
 		label: p['port_desc'] ? `${p['port_label'] as string} (${p['port_desc'] as string})` : String(p['port_label']),
@@ -95,7 +114,7 @@ export async function executeWrite(
 	const store = instance[def.read?.store ?? 'ports']
 	const record = store.get(recordId)
 	if (!record) {
-		instance.log('warn', `executeWrite: no record ${recordId} in ${def.read?.store}`)
+		log.warn(`executeWrite: no record ${recordId} in ${def.read?.store}`)
 		return
 	}
 
@@ -128,11 +147,11 @@ export async function executeWrite(
 
 	try {
 		await putRequest(url, instance, body)
-		instance.log('info', `executeWrite ${def.id} record=${recordId} value=${JSON.stringify(resolvedValue)}`)
+		log.info(`executeWrite ${def.id} record=${recordId} value=${JSON.stringify(resolvedValue)}`)
 		// Refresh the store after write
 		await callFetch(instance, def.write.fetchFn, record['gid'] as string | undefined)
 	} catch (error) {
-		instance.log('error', `executeWrite ${def.id} record=${recordId} failed: ${String(error)}`)
+		log.error(`executeWrite ${def.id} record=${recordId} failed: ${String(error)}`)
 	}
 }
 
@@ -166,7 +185,7 @@ export async function setKeyset(
 	for (const roleId of roleIds) {
 		const roleset = instance.rolesets.get(roleId)
 		if (!roleset) {
-			instance.log('warn', `setKeyset: no roleset for role ${roleId}`)
+			log.warn(`setKeyset: no roleset for role ${roleId}`)
 			continue
 		}
 		const sessions = roleset['sessions'] as DeviceRecord | undefined
@@ -174,13 +193,13 @@ export async function setKeyset(
 		const keysetId = (firstSession?.['data'] as DeviceRecord | undefined)?.['settings'] as DeviceRecord | undefined
 		const defaultRoleId = keysetId?.['defaultRole'] as number | undefined
 		if (defaultRoleId === undefined) {
-			instance.log('warn', `setKeyset: no defaultRole for role ${roleId}`)
+			log.warn(`setKeyset: no defaultRole for role ${roleId}`)
 			continue
 		}
 
 		const keyset = instance.keysets.get(defaultRoleId)
 		if (!keyset) {
-			instance.log('warn', `setKeyset: no cached keyset ${defaultRoleId}`)
+			log.warn(`setKeyset: no cached keyset ${defaultRoleId}`)
 			continue
 		}
 
@@ -209,10 +228,10 @@ export async function setKeyset(
 
 	try {
 		await putRequest(url, instance, body)
-		instance.log('info', `setKeyset ${def.id}: ok`)
+		log.info(`setKeyset ${def.id}: ok`)
 		await fetchKeysets(instance)
 	} catch (error) {
-		instance.log('error', `setKeyset ${def.id} failed: ${String(error)}`)
+		log.error(`setKeyset ${def.id} failed: ${String(error)}`)
 	}
 }
 
@@ -284,16 +303,17 @@ export async function assignKeyChannel(
 
 	try {
 		await putRequest(url, instance, body)
-		instance.log('info', `assignKeyChannel key=${keyIndex}: ok`)
+		log.info(`assignKeyChannel key=${keyIndex}: ok`)
 		await fetchKeysets(instance)
 	} catch (error) {
-		instance.log('error', `assignKeyChannel key=${keyIndex} failed: ${String(error)}`)
+		log.error(`assignKeyChannel key=${keyIndex} failed: ${String(error)}`)
 	}
 }
 
 // ─── RMK ─────────────────────────────────────────────────────────────────────
 
 export async function remoteMicKill(instance: ModuleInstance, roleId: string): Promise<void> {
+	_instance = instance
 	let endpointId: number | null = null
 
 	if (roleId) {
@@ -304,7 +324,7 @@ export async function remoteMicKill(instance: ModuleInstance, roleId: string): P
 				return (association?.['dpId'] as number | undefined) === Number(roleId)
 			}) ?? null
 		if (endpointId === null) {
-			instance.log('warn', `RMK: no online beltpack for role ${roleId}`)
+			log.warn(`RMK: no online beltpack for role ${roleId}`)
 			return
 		}
 	}
@@ -313,15 +333,16 @@ export async function remoteMicKill(instance: ModuleInstance, roleId: string): P
 	const url = `http://${instance.config.host}/api/1/devices/1/endpoints${epSegment}/rmk`
 	try {
 		const response = await postRequest<{ ok: boolean }>(url, instance)
-		instance.log('info', `RMK sent (role=${roleId || 'all'}): ${JSON.stringify(response)}`)
+		log.info(`RMK sent (role=${roleId || 'all'}): ${JSON.stringify(response)}`)
 	} catch (error) {
-		instance.log('error', `RMK failed (role=${roleId || 'all'}): ${String(error)}`)
+		log.error(`RMK failed (role=${roleId || 'all'}): ${String(error)}`)
 	}
 }
 
 // ─── Call ─────────────────────────────────────────────────────────────────────
 
 export async function sendCall(instance: ModuleInstance, roleId: string, active: boolean, text: string): Promise<void> {
+	_instance = instance
 	let endpointId: number | null = null
 	let gid: string | null = null
 
@@ -333,7 +354,7 @@ export async function sendCall(instance: ModuleInstance, roleId: string, active:
 				return (association?.['dpId'] as number | undefined) === Number(roleId)
 			}) ?? null
 		if (epId === null) {
-			instance.log('warn', `Call: no online beltpack for role ${roleId}`)
+			log.warn(`Call: no online beltpack for role ${roleId}`)
 			return
 		}
 		endpointId = epId
@@ -347,15 +368,16 @@ export async function sendCall(instance: ModuleInstance, roleId: string, active:
 
 	try {
 		const response = await postRequest<{ ok: boolean }>(url, instance, body)
-		instance.log('info', `Call (role=${roleId || 'all'} active=${active}): ${JSON.stringify(response)}`)
+		log.info(`Call (role=${roleId || 'all'} active=${active}): ${JSON.stringify(response)}`)
 	} catch (error) {
-		instance.log('error', `Call failed (role=${roleId || 'all'}): ${String(error)}`)
+		log.error(`Call failed (role=${roleId || 'all'}): ${String(error)}`)
 	}
 }
 
 // ─── Nulling ──────────────────────────────────────────────────────────────────
 
 export async function startNulling(instance: ModuleInstance, portIds: number[]): Promise<void> {
+	_instance = instance
 	for (const portId of portIds) {
 		const port = instance.ports.get(portId)
 		if (!port) continue
@@ -363,10 +385,10 @@ export async function startNulling(instance: ModuleInstance, portIds: number[]):
 		try {
 			const result = await postRequest<{ ok: boolean; nulling: string }>(url, instance, {})
 			instance.nullingStatus.set(portId, result.nulling)
-			instance.log('info', `startNulling port=${portId}: ${result.nulling}`)
+			log.info(`startNulling port=${portId}: ${result.nulling}`)
 			void pollNulling(instance, portId, url)
 		} catch (error) {
-			instance.log('error', `startNulling port=${portId} failed: ${String(error)}`)
+			log.error(`startNulling port=${portId} failed: ${String(error)}`)
 		}
 	}
 }
@@ -378,7 +400,7 @@ async function pollNulling(instance: ModuleInstance, portId: number, url: string
 		try {
 			const result = await getRequest<{ ok: boolean; nulling: string }>(url, instance)
 			instance.nullingStatus.set(portId, result.nulling)
-			instance.log('info', `nulling port=${portId}: ${result.nulling}`)
+			log.info(`nulling port=${portId}: ${result.nulling}`)
 			instance.triggerFeedbacksForStore('nulling')
 			if (result.nulling !== 'Idle') wasActive = true
 			if (wasActive && result.nulling === 'Idle') break
@@ -391,6 +413,7 @@ async function pollNulling(instance: ModuleInstance, portId: number, url: string
 // ─── Endpoint role / association ──────────────────────────────────────────────
 
 export async function changeEndpointRole(instance: ModuleInstance, endpointId: number, roleId: number): Promise<void> {
+	_instance = instance
 	const ep = instance.endpoints.get(endpointId)
 	if (!ep) return
 	const url = `http://${instance.config.host}${ep['res'] as string}/changerole`

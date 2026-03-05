@@ -118,7 +118,7 @@ function buildDefsFor(
 		unsubscribe: unsubscribeFn(instance),
 		callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
 			subscribe(instance, feedback.feedbackId, store)
-			return (getValue(Number(feedback.options['subjectId'])) ?? null) as JsonValue
+			return getValue(Number(feedback.options['subjectId'])) as JsonValue
 		},
 	}
 }
@@ -179,12 +179,12 @@ function buildManualFeedbacks(instance: ModuleInstance): Record<string, Feedback
 		return (status?.['keyState'] as DeviceRecord | undefined)?.[keyIndex] as DeviceRecord | undefined
 	}
 
-	const getKeyAssign = (roleId: number, keyIndex: number): string | null => {
+	const getKeyAssign = (roleId: number, keyIndex: number): string => {
 		const keyset = getKeysetForRole(instance, roleId)
-		if (!keyset) return null
+		if (!keyset) return ''
 		const slots = ((keyset['settings'] as DeviceRecord | undefined)?.['keysets'] ?? []) as DeviceRecord[]
 		const slot = slots.find((s) => (s['keysetIndex'] as number) === keyIndex)
-		if (!slot) return null
+		if (!slot) return ''
 		const entities = (slot['entities'] as DeviceRecord[] | undefined) ?? []
 		const entity = entities[0]
 		if (!entity) return '(empty)'
@@ -207,7 +207,7 @@ function buildManualFeedbacks(instance: ModuleInstance): Record<string, Feedback
 			callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
 				subscribe(instance, feedback.feedbackId, 'endpointStatus')
 				const k = getKeyState(Number(feedback.options['roleId']), feedback.options['keyIndex'] as string)
-				return (k?.['currentState'] ?? null) as JsonValue
+				return k?.['currentState'] as JsonValue
 			},
 		},
 
@@ -219,7 +219,7 @@ function buildManualFeedbacks(instance: ModuleInstance): Record<string, Feedback
 			callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
 				subscribe(instance, feedback.feedbackId, 'endpointStatus')
 				const k = getKeyState(Number(feedback.options['roleId']), feedback.options['keyIndex'] as string)
-				return (k?.['volume'] ?? null) as JsonValue
+				return k?.['volume'] as JsonValue
 			},
 		},
 
@@ -287,34 +287,79 @@ function buildManualFeedbacks(instance: ModuleInstance): Record<string, Feedback
 			callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
 				subscribe(instance, feedback.feedbackId, 'endpoints')
 				const gw = instance.gateways.get(Number(feedback.options['endpointId']))
-				return ((gw?.['liveStatus'] as DeviceRecord | undefined)?.['status'] ?? gw?.['status'] ?? null) as JsonValue
+				return ((gw?.['liveStatus'] as DeviceRecord | undefined)?.['status'] ?? gw?.['status']) as JsonValue
 			},
 		},
 
-		// ── Active calls ──────────────────────────────────────────────────────
-		active_calls: {
+		// ── Call From (who is calling) ────────────────────────────────────────
+		call_from: {
 			type: 'value',
-			name: 'Active Calls',
+			name: 'Call From',
+			description: 'Label of the participant currently sending a call',
 			options: [],
 			unsubscribe: unsubscribeFn(instance),
 			callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
 				subscribe(instance, feedback.feedbackId, 'connections')
-				const calling: string[] = []
 				const seen = new Set<number>()
 				for (const conn of instance.connections.values()) {
-					const events = conn['events'] as DeviceRecord | undefined
-					if (events?.['call']) calling.push(`${conn['label']} (${conn['id']})`)
 					const participants = (conn['participants'] as DeviceRecord[] | undefined) ?? []
 					for (const p of participants) {
 						const pId = p['id'] as number
 						const pEvents = p['events'] as DeviceRecord | undefined
 						if (pEvents?.['call'] && !seen.has(pId)) {
-							calling.push(`${p['label']} (${pId})`)
 							seen.add(pId)
+							return p['label'] as JsonValue
 						}
 					}
 				}
-				return calling as unknown as JsonValue
+				return ''
+			},
+		},
+
+		// ── Call To (which connection has a call) ─────────────────────────────
+		call_to: {
+			type: 'value',
+			name: 'Call To',
+			description: 'Label of the connection receiving an active call',
+			options: [],
+			unsubscribe: unsubscribeFn(instance),
+			callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
+				subscribe(instance, feedback.feedbackId, 'connections')
+				for (const conn of instance.connections.values()) {
+					const participants = (conn['participants'] as DeviceRecord[] | undefined) ?? []
+					const hasCall = participants.some((p) => (p['events'] as DeviceRecord | undefined)?.['call'])
+					if (hasCall) return conn['label'] as JsonValue
+				}
+				return ''
+			},
+		},
+
+		// ── Calling (boolean) ─────────────────────────────────────────────────
+		call_on_connection: {
+			type: 'boolean',
+			name: 'Calling',
+			description: 'True when any participant is calling on the selected connection',
+			defaultStyle: { bgcolor: 0xff0000, color: 0xffffff },
+			options: [
+				{
+					type: 'dropdown',
+					id: 'connectionId',
+					label: 'Connection',
+					default: String([...instance.connections.keys()][0] ?? ''),
+					choices: [...instance.connections.values()].map((c) => ({
+						id: String(c['id']),
+						label: c['label'] as string,
+					})),
+				},
+			],
+			unsubscribe: unsubscribeFn(instance),
+			callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
+				subscribe(instance, feedback.feedbackId, 'connections')
+				const connId = Number(feedback.options['connectionId'])
+				const conn = instance.connections.get(connId)
+				if (!conn) return false
+				const participants = (conn['participants'] as DeviceRecord[] | undefined) ?? []
+				return participants.some((p) => (p['events'] as DeviceRecord | undefined)?.['call'])
 			},
 		},
 
@@ -343,7 +388,7 @@ function buildManualFeedbacks(instance: ModuleInstance): Record<string, Feedback
 						unsubscribe: unsubscribeFn(instance),
 						callback: (feedback: { feedbackId: string; options: Record<string, unknown> }) => {
 							subscribe(instance, feedback.feedbackId, 'nulling')
-							return (instance.nullingStatus.get(Number(feedback.options['portId'])) ?? null) as JsonValue
+							return instance.nullingStatus.get(Number(feedback.options['portId'])) as JsonValue
 						},
 					},
 				}
