@@ -1,4 +1,6 @@
-import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
+import { Regex, type SomeCompanionConfigField, type JsonObject } from '@companion-module/base'
+
+// ─── Endpoint type choices ────────────────────────────────────────────────────
 
 export const ENDPOINT_TYPES = [
 	'HMS-4X',
@@ -13,12 +15,77 @@ export const ENDPOINT_TYPES = [
 	'V-Series-32',
 ] as const
 
-export type ModuleConfig = {
-	host: string
-	password: string
-	endpointTypes: string[]
-	logLevel?: 'debug' | 'info' | 'none'
+// ─── Schema cache ─────────────────────────────────────────────────────────────
+
+export interface CachedSchema extends JsonObject {
+	version: string
+	data: JsonObject
 }
+
+// ─── Per-device schema path blacklists ───────────────────────────────────────
+
+const SHARED_BLACKLIST = [
+	'/1/certificate',
+	'/1/devices/{deviceId}/upload',
+	'/1/devices/{deviceId}/upgrade',
+	'/1/devices/{deviceId}/firmware',
+	'/1/devices/{deviceId}/license',
+	'/1/devices/{deviceId}/snapshot',
+	'/1/devices/{deviceId}/restore',
+	'/1/devices/{deviceId}/reboot',
+	'/1/devices/{deviceId}/resettodefault',
+	'/1/devices/{deviceId}/otastate',
+	'/1/devices/{deviceId}/setnetmode',
+	'/1/devices/{deviceId}/setupnetwork',
+	'/1/devices/{deviceId}/networkEvent',
+	'/1/externalDevices',
+	'/1/ivpusers',
+	'/1/datadefinition',
+]
+
+export const SCHEMA_BLACKLIST: Record<string, string[]> = {
+	'NEP-ARCADIA': [
+		...SHARED_BLACKLIST,
+		'/1/devices/{deviceId}/interfaces/{interfaceId}/ports/{portId}/calls',
+		'/1/devices/interfaces/ports/calls',
+		'/1/devices/{deviceId}/interfaces/ports/calls',
+	],
+	_default: SHARED_BLACKLIST,
+}
+
+export function getBlacklistForDevice(deviceType: string): string[] {
+	return SCHEMA_BLACKLIST[deviceType] ?? SCHEMA_BLACKLIST['_default']
+}
+
+export function filterSchema(schema: Record<string, unknown>, deviceType: string): Record<string, unknown> {
+	const blacklist = getBlacklistForDevice(deviceType)
+	const paths = schema['paths'] as Record<string, unknown> | undefined
+	if (!paths) return schema
+
+	const filteredPaths: Record<string, unknown> = {}
+	for (const [path, def] of Object.entries(paths)) {
+		if (!blacklist.some((bl) => path.startsWith(bl))) {
+			filteredPaths[path] = def
+		}
+	}
+
+	return { ...schema, paths: filteredPaths }
+}
+
+// ─── Config & secrets types ───────────────────────────────────────────────────
+
+export interface ModuleConfig extends JsonObject {
+	host: string
+	endpointTypes: string[]
+	logLevel: 'debug' | 'info' | 'none' | null
+	schemaCache: Record<string, CachedSchema> | null
+}
+
+export interface ModuleSecrets extends JsonObject {
+	password: string
+}
+
+// ─── Field definitions ────────────────────────────────────────────────────────
 
 export function GetConfigFields(): SomeCompanionConfigField[] {
 	return [
@@ -30,7 +97,7 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			regex: Regex.IP,
 		},
 		{
-			type: 'textinput',
+			type: 'secret-text',
 			id: 'password',
 			label: 'Admin Password',
 			width: 8,

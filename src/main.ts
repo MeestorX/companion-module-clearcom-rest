@@ -6,12 +6,12 @@ import {
 	CompanionFeedbackSchema,
 	CompanionOptionValues,
 } from '@companion-module/base'
-import { GetConfigFields, type ModuleConfig } from './config.js'
+import { GetConfigFields, type ModuleConfig, type ModuleSecrets } from './config.js'
 import { UpdateVariableDefinitions, UpdateVariableValues } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
-import { postRequest } from './network.js'
+import { postRequest, fetchDevice } from './network.js'
 import { makeLogger } from './logger.js'
 import { connect, disconnect, filterControlDefs } from './commands.js'
 import { loadSchemasAndRefs } from './loadSchemas.js'
@@ -20,14 +20,16 @@ import { DeviceRecord, DeviceInfo, ControlDef, KeyAssignCapabilities, FeedbackSt
 
 export interface ModuleTypes extends InstanceTypes {
 	config: ModuleConfig
+	secrets: ModuleSecrets
 	feedbacks: Record<string, CompanionFeedbackSchema<CompanionOptionValues>>
 }
 
 export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	config!: ModuleConfig
+	secrets!: ModuleSecrets
 	bearerToken: string = ''
 
-	// ─── Device data stores (all generic — schema is source of truth) ─────────
+	// ─── Device data stores ────────────────────────────────────────────────────
 	ports: Map<number, DeviceRecord> = new Map()
 	endpoints: Map<number, DeviceRecord> = new Map()
 	gateways: Map<number, DeviceRecord> = new Map()
@@ -42,8 +44,6 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 	keyAssignCapabilities: Record<string, KeyAssignCapabilities> = {}
 
 	// ─── Feedback trigger registry ────────────────────────────────────────────
-	// Maps feedbackId → which store it reads from.
-	// Used by triggerFeedbacksForStore() to re-check only relevant feedbacks.
 	feedbackTriggers: Map<string, FeedbackStore> = new Map()
 
 	// ─── Nulling state ────────────────────────────────────────────────────────
@@ -55,9 +55,11 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 		super(internal)
 	}
 
-	async init(config: ModuleConfig): Promise<void> {
+	async init(config: ModuleConfig, isFirstInit: boolean, secrets: ModuleSecrets): Promise<void> {
+		void isFirstInit
+		this.secrets = secrets
 		this.updateVariableDefinitions()
-		await this.configUpdated(config)
+		await this.configUpdated(config, secrets)
 	}
 
 	async destroy(): Promise<void> {
@@ -65,19 +67,21 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 		disconnect()
 	}
 
-	async configUpdated(config: ModuleConfig): Promise<void> {
+	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
+		const hostChanged = config.host !== this.config?.host
 		this.config = config
-		disconnect()
-		this.updateStatus(InstanceStatus.Connecting)
-		await this.connect()
+		this.secrets = secrets
+		if (hostChanged || !this.bearerToken) {
+			disconnect()
+			this.updateStatus(InstanceStatus.Connecting)
+			await this.connect()
+		}
 	}
 
 	getConfigFields(): SomeCompanionConfigField[] {
 		return GetConfigFields()
 	}
 
-	// Fingerprint of current dropdown choices — used to avoid unnecessary rebuilds.
-	// Only the things that appear in action/feedback dropdowns are included.
 	private _choicesFingerprint = ''
 
 	choicesFingerprint(): string {
@@ -113,12 +117,9 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 		UpdateVariableValues(this)
 	}
 
-	// Re-check all feedbacks that read from the given store
 	triggerFeedbacksForStore(store: string): void {
 		const ids = [...this.feedbackTriggers.entries()].filter(([_, s]) => s === store).map(([id]) => id)
-		if (ids.length > 0) {
-			this.checkFeedbacks(ids[0], ...ids.slice(1))
-		}
+		if (ids.length > 0) this.checkFeedbacks(ids[0], ...ids.slice(1))
 	}
 
 	async connect(): Promise<void> {
@@ -126,13 +127,15 @@ export default class ModuleInstance extends InstanceBase<ModuleTypes> {
 		try {
 			const loginResponse = await postRequest<{ jwt: string }>(`${apiBaseUrl}/auth/local/login`, this, {
 				logemail: 'admin',
-				logpassword: this.config.password,
+				logpassword: this.secrets.password,
 			})
 			if (!loginResponse) {
 				this.updateStatus(InstanceStatus.ConnectionFailure, 'Login failed')
 				return
 			}
 			this.bearerToken = loginResponse.jwt
+
+			await fetchDevice(this)
 
 			const loaded = await loadSchemasAndRefs(this, apiBaseUrl)
 			this.controlDefs = filterControlDefs(buildControlDefs(loaded))

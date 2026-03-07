@@ -1,10 +1,10 @@
 {
 	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
-	"id": "companion-module-clearcom-rest",
-	"name": "companion-module-clearcom-rest",
+	"id": "clearcom-rest",
+	"name": "clearcom rest",
 	"shortname": "CC Rest",
 	"description": "A Module to control Clear-Com equipment that use a REST API",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"type": "connection",
 	"license": "MIT",
 	"repository": "git+https://github.com/MeestorX/companion-module-clearcom-rest.git",
@@ -19,10 +19,7 @@
 		"type": "node22",
 		"api": "nodejs-ipc",
 		"apiVersion": "0.0.0",
-		"entrypoint": "../dist/main.js",
-		"permissions": {
-			"filesystem": true
-		}
+		"entrypoint": "../dist/main.js"
 	},
 	"legacyIds": [],
 	"manufacturer": "Clear-Com",

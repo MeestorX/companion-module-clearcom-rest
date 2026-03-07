@@ -1,6 +1,6 @@
 # companion-module-clearcom-rest
 
-version 0.2.1
+version 0.2.2
 
 See [HELP.md](./companion/HELP.md) and [LICENSE](./LICENSE)
 

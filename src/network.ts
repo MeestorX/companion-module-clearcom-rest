@@ -129,6 +129,7 @@ async function refreshToken(instance: ModuleInstance): Promise<void> {
 }
 
 let relogging = false
+let connectionGeneration = 0
 
 async function reLogin(instance: ModuleInstance): Promise<void> {
 	if (relogging) return
@@ -136,13 +137,12 @@ async function reLogin(instance: ModuleInstance): Promise<void> {
 	try {
 		const response = await postRequest<{ jwt: string }>(`http://${instance.config.host}/auth/local/login`, instance, {
 			logemail: 'admin',
-			logpassword: instance.config.password,
+			logpassword: instance.secrets.password,
 		})
 		instance.bearerToken = response.jwt
 		log.info('Re-login successful — reconnecting socket')
 		disconnectSocket()
 		connectSocket(instance)
-		void initialFetch(instance)
 	} catch (error) {
 		log.warn(`Re-login failed: ${String(error)} — retrying in 30s`)
 		resetKeepalive(instance)
@@ -395,19 +395,30 @@ async function fetchNullingStatus(instance: ModuleInstance): Promise<void> {
 	instance.triggerFeedbacksForStore('nulling')
 }
 
-async function initialFetch(instance: ModuleInstance): Promise<void> {
+async function initialFetch(instance: ModuleInstance, gen: number): Promise<void> {
+	const check = (): boolean => gen === connectionGeneration
 	try {
+		if (!check()) return
 		await fetchDevice(instance)
+		if (!check()) return
 		await fetchRolesets(instance)
+		if (!check()) return
 		await fetchConnections(instance)
+		if (!check()) return
 		await fetchPorts(instance)
+		if (!check()) return
 		await fetchKeysets(instance)
+		if (!check()) return
 		await fetchEndpoints(instance)
+		if (!check()) return
 		await fetchNullingStatus(instance)
+		if (!check()) return
 		instance.rebuildIfChanged()
+		instance.triggerFeedbacksForStore('endpoints')
+		instance.triggerFeedbacksForStore('endpointStatus')
 		log.info('Initial fetch complete')
 	} catch (error) {
-		log.error(`Initial fetch failed: ${String(error)}`)
+		if (check()) log.error(`Initial fetch failed: ${String(error)}`)
 	}
 }
 
@@ -444,7 +455,8 @@ export function connectSocket(instance: ModuleInstance): void {
 		log.info('Socket connected')
 		instance.updateStatus(InstanceStatus.Ok)
 		resetKeepalive(instance)
-		void initialFetch(instance)
+		const gen = ++connectionGeneration
+		void initialFetch(instance, gen)
 	})
 
 	socket.on('disconnect', (reason: string) => {
